@@ -1,0 +1,25 @@
+terraform {
+  required_version = ">= 1.9.0"
+
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+  }
+
+  backend "s3" {}
+}
+
+provider "aws" {
+  region = var.aws_region
+
+  default_tags {
+    tags = {
+      application = var.app_name
+      environment = "prod"
+      managed-by  = "terraform"
+      platform    = "platform-engineering"
+    }
+  }
+}

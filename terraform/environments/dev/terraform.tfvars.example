@@ -1,0 +1,15 @@
+aws_region      = "eu-west-1"   # deployment region — distinct from the tfstate bucket region set at init
+app_name        = "myapp"
+container_image = "public.ecr.aws/nginx/nginx:stable-alpine"
+
+# Root domain managed in Route 53. Certificate is issued automatically for myapp.dev.<main_domain>.
+main_domain = "example.com"
+
+# Port the container listens on. Real apps: 8080 (default). nginx placeholder: 80.
+container_port = 80
+# Health check path. Real apps: /health (default). nginx placeholder: /
+health_check_path = "/"
+
+app_settings = {
+  NODE_ENV = "development"
+}

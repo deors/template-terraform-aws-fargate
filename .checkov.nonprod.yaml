@@ -1,0 +1,38 @@
+# Checkov configuration for non-production environments (dev, staging).
+# Mirrors .checkov.yaml plus the checks that are prod-only baselines.
+# Keep the skip lists in sync with .checkov.yaml when adding/removing entries.
+
+compact: false
+
+skip-check:
+  # ── ALB access logs – S3 bucket setup is out of scope for the workshop ──────
+  - CKV_AWS_91    # ALB access logs: not provisioned by this template
+  - CKV2_AWS_20   # ALB redirects HTTP to HTTPS: HTTP-only mode is supported for dev
+
+  # ── WAF – out of scope for workshop template ───────────────────────────────
+  - CKV2_AWS_28   # WAF for ALB
+
+  # ── KMS CMK encryption – out of scope ──────────────────────────────────────
+  - CKV_AWS_158   # CloudWatch log group KMS CMK: workshop uses AWS-managed keys
+  - CKV_AWS_338   # CloudWatch log group 1-year retention: environment-driven (30/60/90 days)
+  - CKV2_AWS_57   # Secrets Manager auto-rotation
+
+  # ── ECS image and user – managed by CI/CD or container image ───────────────
+  - CKV_AWS_336   # ECS task definition pinned image tag
+  - CKV_AWS_249   # ECS task runs as non-root
+
+  # ── ALB-to-container HTTP – TLS terminates at the ALB ─────────────────────
+  - CKV_AWS_378   # ALB target group uses HTTP: internal VPC traffic; TLS terminates at the ALB
+
+  # ── HTTP redirect listener – TLS not applicable ────────────────────────────
+  # CKV_AWS_103 and CKV2_AWS_74 are NOT skipped here: all environments now use
+  # ELBSecurityPolicy-TLS13-1-3-2021-06, enforced by a validation block on the
+  # webapp module's ssl_policy variable. The HTTPS listener passes natively;
+  # the HTTP redirect listener is covered by an inline skip in the webapp module
+  # (HTTP cannot use TLS by definition).
+
+  # ── Prod-only baselines, skipped for dev/staging ────────────────────────────
+  - CKV_AWS_150   # ALB deletion protection: dev/staging skip for faster teardown cycles
+  - CKV_AWS_260   # SG restricts all traffic: dev ALB SG accepts 0.0.0.0/0 for public internet-facing access
+  - CKV2_AWS_5    # SG attached to resource: false-positive when SGs are defined in the networking module and attached in the webapp module
+  - CKV2_AWS_19   # EIP attached to EC2: EIP is attached to NAT Gateway (not EC2), false-positive

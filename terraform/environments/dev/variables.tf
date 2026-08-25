@@ -1,0 +1,37 @@
+variable "aws_region" {
+  description = "AWS region for all resources (e.g. eu-west-1, us-east-1). No default — must be set explicitly to avoid accidental cross-region deployments."
+  type        = string
+}
+
+variable "app_name" {
+  description = "Application name (short, lowercase, no spaces). Used as a resource name prefix."
+  type        = string
+}
+
+variable "container_image" {
+  description = "Container image reference (repository/image:tag)"
+  type        = string
+}
+
+variable "container_port" {
+  description = "TCP port the application container listens on (default 8080; use 80 for plain nginx placeholders)"
+  type        = number
+  default     = 8080
+}
+
+variable "health_check_path" {
+  description = "HTTP path the ALB health check polls (default /health; use / for plain nginx placeholders)"
+  type        = string
+  default     = "/health"
+}
+
+variable "main_domain" {
+  description = "Root domain managed in Route 53 (e.g. \"example.com\"). Certificate is issued for <app_name>.dev.<main_domain>."
+  type        = string
+}
+
+variable "app_settings" {
+  description = "Additional application environment variables"
+  type        = map(string)
+  default     = {}
+}

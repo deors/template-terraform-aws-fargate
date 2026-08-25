@@ -1,0 +1,15 @@
+aws_region      = "eu-west-1"   # deployment region — distinct from the tfstate bucket region set at init
+app_name        = "myapp"
+container_image = "123456789012.dkr.ecr.us-east-1.amazonaws.com/myapp:latest"
+
+# Root domain managed in Route 53. Certificate is issued automatically for myapp.staging.<main_domain>.
+main_domain = "example.com"
+
+# Port the container listens on (default 8080).
+container_port = 8080
+# Health check path (default /health).
+health_check_path = "/health"
+
+app_settings = {
+  NODE_ENV = "staging"
+}

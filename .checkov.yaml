@@ -1,0 +1,47 @@
+# Checkov configuration for Terraform – AWS Fargate (container-based)
+# Docs: https://www.checkov.io/2.Basics/CLI%20Command%20Reference.html
+
+# Enforce hard-fail by default; CI passes --soft-fail=false explicitly.
+# To permit a new check during a migration, add it here with a comment
+# explaining why and a tracking issue reference.
+
+compact: false
+
+skip-check:
+  # ── ALB access logs – S3 bucket setup is out of scope for the workshop ──────
+  - CKV_AWS_91    # ALB access logs: a dedicated logging S3 bucket is not provisioned by this template; CloudWatch/X-Ray cover observability
+  - CKV2_AWS_20   # ALB redirects HTTP to HTTPS: handled only when certificate_arn is provided; HTTP-only mode is supported for dev
+
+  # ── WAF – out of scope for workshop template ───────────────────────────────
+  - CKV2_AWS_28   # WAF for ALB: WAF integration is out of scope for this template
+
+  # ── KMS CMK encryption – out of scope ──────────────────────────────────────
+  - CKV_AWS_158   # CloudWatch log group KMS CMK: workshop uses AWS-managed keys; skipped inline on each resource
+  - CKV_AWS_338   # CloudWatch log group 1-year retention: retention is environment-driven (30/60/90 days); skipped inline on each resource
+  - CKV2_AWS_57   # Secrets Manager auto-rotation: rotation policies are app-specific, not template scope
+
+  # ── ECS task image pinning – managed by CI/CD, not Terraform ───────────────
+  - CKV_AWS_336   # ECS task definition pinned image tag: CI/CD owns the image tag; Terraform holds a placeholder
+
+  # ── ECS non-root user – app-image responsibility ───────────────────────────
+  - CKV_AWS_249   # ECS task runs as non-root: enforced in the container image, not the task definition
+
+  # ── ALB-to-container HTTP – TLS terminates at the ALB ─────────────────────
+  - CKV_AWS_378   # ALB target group uses HTTP: traffic between ALB and ECS containers is internal VPC HTTP; TLS terminates at the ALB listener
+
+  # ── HTTP redirect listener – TLS not applicable ────────────────────────────
+  # CKV_AWS_103 is NOT skipped globally: the HTTPS listener passes natively
+  # (ELBSecurityPolicy-TLS13-1-3-2021-06); the HTTP redirect listener carries an
+  # inline checkov:skip in the webapp module (HTTP cannot use TLS by definition).
+  #
+  # CKV2_AWS_74 (strong ciphers) is NOT skipped in either config: every
+  # environment now uses ELBSecurityPolicy-TLS13-1-3-2021-06, enforced by a
+  # validation block on the webapp module's ssl_policy variable, so the check
+  # passes natively everywhere.
+
+  # ── Prod-only baselines, NOT skipped here — they must pass for prod.
+  # Non-prod environments use .checkov.nonprod.yaml which additionally skips:
+  #   CKV_AWS_150  — ALB deletion protection (dev/staging opt out for faster teardown)
+  #   CKV_AWS_260  — SG restricts all traffic (ALB SG allows 0.0.0.0/0 in dev for public access)
+  #   CKV2_AWS_5   — SG attached to resource (false-positive on SGs pre-associated in networking module)
+  #   CKV2_AWS_19  — EIP attached to EC2 (false-positive: the EIP is on the NAT Gateway)
