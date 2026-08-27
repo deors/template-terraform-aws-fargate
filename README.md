@@ -278,17 +278,30 @@ infrastructure template shipping and maintaining its own near-duplicate copy.
 
 ### Step 2 — Security scan (Checkov)
 
-Run Checkov before `tofu plan` to catch policy violations early. Use the environment-appropriate config:
+Run Checkov before `tofu plan` to catch policy violations early.
+Each environment is scanned with its own baseline: dev and staging use the
+relaxed config, prod the strict one. Checkov resolves the shared modules with
+the values each environment passes in, so module code is assessed three times —
+once per environment, under its real configuration.
+
+Do **not** scan `terraform/modules` on its own: with no caller, Checkov judges
+the module *defaults*, which are deliberately non-prod-shaped (single NAT
+gateway, no autoscaling, no blue/green), and the strict baseline fails checks
+that every actual deployment satisfies.
 
 ```bash
-# dev or staging
-checkov -d terraform/ --config-file .checkov.nonprod.yaml
+# dev
+checkov -d terraform/environments/dev --config-file .checkov.nonprod.yaml
+
+# staging
+checkov -d terraform/environments/staging --config-file .checkov.nonprod.yaml
 
 # prod
-checkov -d terraform/ --config-file .checkov.yaml
+checkov -d terraform/environments/prod --config-file .checkov.yaml
 ```
 
-All checks must pass (zero failures) before proceeding.
+All three scans must pass (zero failures) before proceeding. Every skip in
+both config files carries a stated reason.
 
 ### Step 3 — Init
 
