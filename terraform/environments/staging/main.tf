@@ -46,7 +46,7 @@ module "networking" {
 
   app_port = var.container_port
 
-  # ACM certificate: issued for staging-<app_name>.<main_domain> via DNS validation
+  # ACM certificate: issued for <app_name>.staging.<main_domain> via DNS validation
   main_domain = var.main_domain
 }
 

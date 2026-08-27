@@ -330,7 +330,7 @@ resource "aws_flow_log" "this" {
 
 # ──────────────────────────────────────────────────────────────────────────────
 # ACM Certificate (DNS-validated via Route 53)
-# Issued for <environment>-<name>.<main_domain> when main_domain is provided.
+# Issued for <name>.<environment>.<main_domain> when main_domain is provided.
 # The validation resource blocks apply until ACM reports ISSUED, so the
 # certificate_arn output is safe to use immediately in the webapp module.
 # ──────────────────────────────────────────────────────────────────────────────

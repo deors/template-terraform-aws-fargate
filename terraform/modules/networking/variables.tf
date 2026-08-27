@@ -67,7 +67,7 @@ variable "app_port" {
 }
 
 variable "main_domain" {
-  description = "Root domain managed in Route 53 (e.g. \"example.com\"). When set, a DNS-validated ACM certificate is issued for <environment>-<name>.<main_domain> using the matching public hosted zone."
+  description = "Root domain managed in Route 53 (e.g. \"example.com\"). When set, a DNS-validated ACM certificate is issued for <name>.<environment>.<main_domain> using the matching public hosted zone."
   type        = string
   default     = ""
 }
