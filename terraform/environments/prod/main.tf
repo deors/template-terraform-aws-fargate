@@ -49,6 +49,12 @@ module "networking" {
 
   # ACM certificate: issued for <app_name>.prod.<main_domain> via DNS validation
   main_domain = var.main_domain
+
+  # Prod's ALB is internal: publish the FQDN in a VPC-private hosted zone
+  # (split-horizon), never in public DNS — a public record answering with
+  # RFC1918 addresses leaks internal topology and is dropped by resolvers with
+  # DNS-rebinding protection. Only the ACM validation CNAMEs stay public.
+  private_app_dns = true
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -106,11 +112,13 @@ module "webapp" {
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
-# DNS — alias record pointing the app FQDN at the ALB
+# DNS — alias record pointing the app FQDN at the internal ALB, at the apex of
+# the VPC-private hosted zone. The name resolves only inside the VPC; outside
+# it does not resolve at all, which is the point.
 # ──────────────────────────────────────────────────────────────────────────────
 resource "aws_route53_record" "alb" {
   count   = var.main_domain != "" ? 1 : 0
-  zone_id = module.networking.public_zone_id
+  zone_id = module.networking.private_zone_id
   name    = module.networking.cert_domain_name
   type    = "A"
 

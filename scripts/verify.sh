@@ -462,29 +462,60 @@ if [[ -n "$MAIN_DOMAIN" ]]; then
 fi
 
 # ── Route 53 DNS Records ──────────────────────────────────────────────────────
+# Split-horizon: dev (internet-facing ALB) publishes its A record in the public
+# zone; staging and prod (internal ALB) publish it at the apex of a VPC-private
+# hosted zone named after the FQDN, and the public zone must NOT carry it — a
+# public record answering with private IPs leaks internal topology and is
+# dropped by resolvers with DNS-rebinding protection. The ACM validation CNAMEs
+# stay public in every environment: ACM validates from the public internet.
 if [[ -n "$MAIN_DOMAIN" ]]; then
   echo "::group::Route 53 DNS"
   EXPECTED_FQDN="${APP_NAME}.${ENVIRONMENT}.${MAIN_DOMAIN}"
+  # Explicit boolean literal, not "!Config.PrivateZone" — the AWS CLI's
+  # JMESPath does not evaluate the bare not-expression here and returns no
+  # match even for public zones.
   ZONE_ID=$(aws route53 list-hosted-zones \
-    --query "HostedZones[?Name=='${MAIN_DOMAIN}.'].Id | [0]" \
+    --query "HostedZones[?Name=='${MAIN_DOMAIN}.' && Config.PrivateZone == \`false\`].Id | [0]" \
     --output text 2>/dev/null | sed 's|/hostedzone/||')
   if [[ -z "$ZONE_ID" || "$ZONE_ID" == "None" ]]; then
     fail "Public hosted zone for ${MAIN_DOMAIN}: not found"
   else
     pass "Public hosted zone = $ZONE_ID"
-    DNS_JSON=$(aws route53 list-resource-record-sets \
+    PUBLIC_A_JSON=$(aws route53 list-resource-record-sets \
       --hosted-zone-id "$ZONE_ID" \
-      --query "ResourceRecordSets[?Name=='${EXPECTED_FQDN}.'] | [0]" \
+      --query "ResourceRecordSets[?Name=='${EXPECTED_FQDN}.' && Type=='A'] | [0]" \
       --output json 2>/dev/null || echo '{}')
-    DNS_TYPE=$(echo "$DNS_JSON" | jq -r '.Type // "missing"')
-    assert_eq "DNS record type" "$DNS_TYPE" "A"
-    ALIAS_TARGET=$(echo "$DNS_JSON" | jq -r '.AliasTarget.DNSName // "missing"')
-    assert_not_empty "DNS alias target" "$ALIAS_TARGET"
     VALIDATE_CNAME_COUNT=$(aws route53 list-resource-record-sets \
       --hosted-zone-id "$ZONE_ID" \
       --query "ResourceRecordSets[?Type=='CNAME' && contains(Name, '${EXPECTED_FQDN}')] | length(@)" \
       --output text 2>/dev/null || echo 0)
     assert_ge "ACM validation CNAME" "${VALIDATE_CNAME_COUNT:-0}" 1
+
+    if [[ "$EXPECTED_ALB_SCHEME" == "internet-facing" ]]; then
+      assert_eq "Public DNS record type" "$(echo "$PUBLIC_A_JSON" | jq -r '.Type // "missing"')" "A"
+      assert_not_empty "Public DNS alias target" "$(echo "$PUBLIC_A_JSON" | jq -r '.AliasTarget.DNSName // "missing"')"
+    else
+      # The absence check is the security property this design exists for.
+      if [[ "$(echo "$PUBLIC_A_JSON" | jq -r '.Type // "absent"')" == "absent" ]]; then
+        pass "No public A record for ${EXPECTED_FQDN} (internal environment)"
+      else
+        fail "Public zone carries an A record for ${EXPECTED_FQDN} — internal environments must publish only in the private zone"
+      fi
+      PRIVATE_ZONE_ID=$(aws route53 list-hosted-zones \
+        --query "HostedZones[?Name=='${EXPECTED_FQDN}.' && Config.PrivateZone == \`true\`].Id | [0]" \
+        --output text 2>/dev/null | sed 's|/hostedzone/||')
+      if [[ -z "$PRIVATE_ZONE_ID" || "$PRIVATE_ZONE_ID" == "None" ]]; then
+        fail "Private hosted zone ${EXPECTED_FQDN}: not found"
+      else
+        pass "Private hosted zone = $PRIVATE_ZONE_ID"
+        PRIV_JSON=$(aws route53 list-resource-record-sets \
+          --hosted-zone-id "$PRIVATE_ZONE_ID" \
+          --query "ResourceRecordSets[?Name=='${EXPECTED_FQDN}.' && Type=='A'] | [0]" \
+          --output json 2>/dev/null || echo '{}')
+        assert_eq "Private DNS record type" "$(echo "$PRIV_JSON" | jq -r '.Type // "missing"')" "A"
+        assert_not_empty "Private DNS alias target" "$(echo "$PRIV_JSON" | jq -r '.AliasTarget.DNSName // "missing"')"
+      fi
+    fi
   fi
   echo "::endgroup::"
 fi

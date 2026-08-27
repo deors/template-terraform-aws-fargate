@@ -23,7 +23,7 @@ When used with the **workshop-platform-eng** provisioning workflow:
 | **Subnets** | Private (ECS) + Public (NAT, dev ALB) | 2 AZs per env |
 | **NAT Gateway** | Outbound internet for ECS tasks (ECR, AWS APIs) | 1 (dev/staging) / 1-per-AZ (prod) |
 | **Security Groups** | ALB → App least-privilege ingress | ALB open to internet (dev only) |
-| **Route 53 Private Zone** | Internal DNS for service discovery | Per-environment zone |
+| **Route 53 DNS** | Split-horizon: app FQDN alias record for the ALB | Public zone record (dev) / VPC-private zone (staging, prod) |
 | **VPC Flow Logs** | Traffic diagnostics to CloudWatch | All envs |
 | **CloudWatch Log Groups** | ECS container logs + X-Ray daemon logs | Retention: 30/60/90 days per env |
 | **CloudWatch Alarms** | CPU high, memory high, task count low | All envs |
@@ -145,6 +145,7 @@ everywhere — TLS policy, tagging, encryption — are documented once under
 | **Log retention** | 30 days | 60 days | 90 days |
 | **X-Ray sampling** | 100% — full capture while developing | 10% | 1% — low overhead at production volume |
 | **Deployment** | Rolling update, no CodeDeploy | CodeDeploy blue/green, linear 10% | CodeDeploy blue/green, linear 50%, auto-rollback |
+| **App DNS record** | Public zone — resolvable from anywhere | VPC-private zone — resolves only inside the VPC | VPC-private zone — resolves only inside the VPC |
 | **Checkov baseline** | `.checkov.nonprod.yaml` (relaxed) | `.checkov.nonprod.yaml` (relaxed) | `.checkov.yaml` (strict) |
 
 ---
@@ -156,6 +157,7 @@ everywhere — TLS policy, tagging, encryption — are documented once under
 - **Egress**: ECS tasks restricted to HTTPS (443) and DNS (53) outbound via security group
 - **Inbound**: ALB is internal in staging/prod; dev ALB is internet-facing for CI access
 - **Flow Logs**: VPC traffic logged to CloudWatch for compliance audit trails
+- **DNS**: split-horizon — internal environments (staging/prod) publish their FQDN only in a VPC-private hosted zone; internal IPs never appear in public DNS. `verify.sh` asserts the public record's absence for those environments
 
 ### Identity & Access
 
@@ -219,6 +221,16 @@ Set `main_domain` to the root domain managed in Route 53. The networking module 
 2. Looks up the matching public hosted zone by name
 3. Issues a DNS-validated ACM certificate and creates the Route 53 validation record
 4. Passes the validated certificate ARN to the ALB HTTPS listener
+5. Publishes the FQDN as an alias record for the ALB — **split-horizon by
+   environment**: dev's record goes in the public zone (its ALB is
+   internet-facing), while staging and prod publish at the apex of a
+   VPC-private hosted zone named after the FQDN, so their names resolve only
+   inside the VPC and internal IP addresses never appear in public DNS. A
+   public record answering with RFC1918 addresses would leak internal topology
+   and be dropped by resolvers with DNS-rebinding protection. Only the ACM
+   validation CNAMEs stay public in every environment — ACM validates from the
+   public internet, and the FQDN's existence is public anyway via Certificate
+   Transparency logs; the private zone hides the addresses, not the name.
 
 ```hcl
 # terraform.tfvars

@@ -50,6 +50,11 @@ module "networking" {
 
   # ACM certificate: issued for <app_name>.dev.<main_domain> via DNS validation
   main_domain = var.main_domain
+
+  # Dev's ALB is internet-facing, so its DNS record belongs in the public zone
+  # (created below). Staging and prod set this true and publish in a
+  # VPC-private zone instead — their internal ALBs must not appear in public DNS.
+  private_app_dns = false
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -103,8 +108,10 @@ module "webapp" {
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
-# DNS — alias record pointing the app FQDN at the ALB
-# Created only when main_domain is set; omitted for plain HTTP-only deployments.
+# DNS — alias record pointing the app FQDN at the ALB, in the PUBLIC zone.
+# Correct for dev only: the ALB is internet-facing, so the record answers with
+# public IPs. Created only when main_domain is set; omitted for plain HTTP-only
+# deployments.
 # ──────────────────────────────────────────────────────────────────────────────
 resource "aws_route53_record" "alb" {
   count   = var.main_domain != "" ? 1 : 0

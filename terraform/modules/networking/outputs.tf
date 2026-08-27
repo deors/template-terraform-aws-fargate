@@ -29,13 +29,13 @@ output "app_sg_id" {
 }
 
 output "private_zone_id" {
-  description = "Route 53 private hosted zone ID"
-  value       = aws_route53_zone.private.zone_id
+  description = "ID of the VPC-private hosted zone for the app FQDN. Empty string when not created (public-DNS environment, or main_domain not set)."
+  value       = local.create_private_zone ? aws_route53_zone.private[0].zone_id : ""
 }
 
 output "private_zone_name" {
-  description = "Route 53 private hosted zone name"
-  value       = aws_route53_zone.private.name
+  description = "Name of the VPC-private hosted zone (the app FQDN). Empty string when not created."
+  value       = local.create_private_zone ? aws_route53_zone.private[0].name : ""
 }
 
 output "certificate_arn" {

@@ -48,10 +48,10 @@ variable "single_nat_gateway" {
   default     = true
 }
 
-variable "private_zone_name" {
-  description = "Name for the Route 53 private hosted zone"
-  type        = string
-  default     = "internal"
+variable "private_app_dns" {
+  description = "Publish the application FQDN in a VPC-private hosted zone instead of the public zone. Set true for environments with an internal ALB (staging/prod): the name then resolves only inside the VPC and internal IPs never appear in public DNS. Set false for environments with an internet-facing ALB (dev). Only effective when main_domain is set."
+  type        = bool
+  default     = true
 }
 
 variable "flow_log_retention_days" {

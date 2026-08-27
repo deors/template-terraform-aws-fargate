@@ -16,6 +16,10 @@ locals {
   # ACM certificate automation: active only when main_domain is provided
   create_certificate = var.main_domain != ""
   cert_domain_name   = "${lower(var.name)}.${lower(var.environment)}.${var.main_domain}"
+
+  # Split-horizon DNS: a VPC-private zone for the app FQDN, for environments
+  # whose ALB is internal (see the Route 53 section below)
+  create_private_zone = local.create_certificate && var.private_app_dns
 }
 
 data "aws_availability_zones" "available" {
@@ -249,11 +253,28 @@ resource "aws_security_group" "app" {
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Route 53 Private Hosted Zone
-# ──────────────────────────────────────────────────────────────────────────────
-
+# Route 53 Private Hosted Zone — split-horizon DNS for internal environments
+#
+# Created only when a certificate is issued AND the app's DNS is private
+# (private_app_dns, set for environments whose ALB is internal). The zone is
+# named after the app FQDN itself, so the alias record at its apex matches the
+# ACM certificate and HTTPS hostname verification works unchanged inside the
+# VPC. The environment root creates that record — it needs the ALB attributes
+# from the webapp module, which this module cannot reference.
+#
+# Why internal ALBs must not use a public record: a world-resolvable record
+# answering with RFC1918 addresses leaks internal topology, and resolvers with
+# DNS-rebinding protection drop such answers, making the name intermittently
+# unresolvable for legitimate clients depending on their DNS path. The public
+# zone keeps only the ACM validation CNAMEs, which must stay public for
+# issuance and renewal. The FQDN's existence is public regardless — every ACM
+# certificate lands in Certificate Transparency logs — but the IPs are not.
+#
+# A .internal-style zone cannot serve this purpose: no public CA issues
+# certificates for reserved TLDs, so any name under it fails TLS verification.
 resource "aws_route53_zone" "private" {
-  name = "${var.private_zone_name}.${var.name}.internal"
+  count = local.create_private_zone ? 1 : 0
+  name  = local.cert_domain_name
 
   vpc {
     vpc_id = aws_vpc.this.id
