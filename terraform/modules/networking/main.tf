@@ -218,22 +218,31 @@ resource "aws_security_group" "app" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  # DNS resolution
+  # DNS resolution, scoped to the VPC.
+  #
+  # Traffic to the default resolver (Route 53 Resolver at VPC-base+2 /
+  # 169.254.169.253) bypasses security group evaluation entirely — AWS does
+  # not let SGs filter it — so tasks resolve names regardless of these rules.
+  # What this scope governs is the non-default path: a container querying an
+  # external resolver directly. Restricting it to the VPC CIDR closes the
+  # direct-to-internet DNS channel (the classic DNS-tunnelling exfiltration
+  # path) at zero cost to standard workloads, while keeping the rules as
+  # documentation of intent and cover for any future in-VPC resolver.
   egress {
-    description = "DNS (UDP) for name resolution"
+    description = "DNS (UDP) for name resolution, VPC-scoped"
     from_port   = 53
     to_port     = 53
     protocol    = "udp"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = [var.vpc_cidr]
   }
 
-  # DNS over TCP (fallback for large responses)
+  # DNS over TCP (fallback for truncated responses, e.g. large record sets)
   egress {
-    description = "DNS (TCP) fallback"
+    description = "DNS (TCP) fallback, VPC-scoped"
     from_port   = 53
     to_port     = 53
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = [var.vpc_cidr]
   }
 
   tags = merge(local.base_tags, { Name = "app-sg-${local.prefix}" })
