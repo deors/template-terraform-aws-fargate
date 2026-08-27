@@ -56,7 +56,13 @@ assert_eq() {
 }
 
 assert_ge() {
-  if [[ "$2" -ge "$3" ]] 2>/dev/null; then pass "$1 = $2 (≥ $3)"
+  # The numeric guard is load-bearing, not cosmetic: under set -u on bash 3.2,
+  # a non-numeric actual value — e.g. the literal "None" the AWS CLI prints for
+  # null --output text results — is treated as an unset variable name inside
+  # [[ -ge ]] and aborts the entire script before emit_summary runs, breaking
+  # the "summary is always written" contract. Rejecting it as a check failure
+  # keeps the run alive and reports the bad value instead.
+  if [[ "$2" =~ ^[0-9]+$ ]] && [[ "$2" -ge "$3" ]]; then pass "$1 = $2 (≥ $3)"
   else fail "$1: expected ≥ $3, got '$2'"; fi
 }
 
@@ -170,17 +176,20 @@ case "$ENVIRONMENT" in
     EXPECTED_CPU=256; EXPECTED_MEMORY=512
     EXPECTED_MIN_TASKS=1; EXPECTED_DESIRED=1
     EXPECTED_AUTOSCALING=false; EXPECTED_BLUE_GREEN=false
-    EXPECTED_LOG_RETENTION=30; EXPECTED_ALB_SCHEME="internet-facing" ;;
+    EXPECTED_LOG_RETENTION=30; EXPECTED_ALB_SCHEME="internet-facing"
+    EXPECTED_XRAY_RATE=1.0 ;;
   staging)
     EXPECTED_CPU=512; EXPECTED_MEMORY=1024
     EXPECTED_MIN_TASKS=1; EXPECTED_DESIRED=1
     EXPECTED_AUTOSCALING=true; EXPECTED_BLUE_GREEN=true
-    EXPECTED_LOG_RETENTION=60; EXPECTED_ALB_SCHEME="internal" ;;
+    EXPECTED_LOG_RETENTION=60; EXPECTED_ALB_SCHEME="internal"
+    EXPECTED_XRAY_RATE=0.10 ;;
   prod)
     EXPECTED_CPU=1024; EXPECTED_MEMORY=2048
     EXPECTED_MIN_TASKS=3; EXPECTED_DESIRED=3
     EXPECTED_AUTOSCALING=true; EXPECTED_BLUE_GREEN=true
-    EXPECTED_LOG_RETENTION=90; EXPECTED_ALB_SCHEME="internal" ;;
+    EXPECTED_LOG_RETENTION=90; EXPECTED_ALB_SCHEME="internal"
+    EXPECTED_XRAY_RATE=0.01 ;;
   *)
     # Unreachable — ENVIRONMENT is validated above. Kept so that adding a value
     # to VALID_ENVIRONMENTS without adding its expectations here fails loudly,
@@ -327,6 +336,48 @@ LOG_NAME=$(echo "$LOG_JSON" | jq -r '.logGroupName // "missing"')
 assert_not_empty "Log group" "$LOG_NAME"
 LOG_RETENTION=$(echo "$LOG_JSON" | jq -r '.retentionInDays // 0')
 assert_eq "Log retention days" "$LOG_RETENTION" "$EXPECTED_LOG_RETENTION"
+echo "::endgroup::"
+
+# ── CloudWatch Alarms ─────────────────────────────────────────────────────────
+# Existence only, not state: minutes after an apply the alarms legitimately sit
+# in INSUFFICIENT_DATA until enough datapoints arrive, so asserting OK would
+# flake on every fresh deployment. Unlike ECS clusters and services, alarms are
+# hard-deleted on destroy, so no soft-delete gate is needed — a torn-down stack
+# fails these checks correctly.
+echo "::group::CloudWatch Alarms"
+EXPECTED_ALARMS=("${PREFIX}-ecs-cpu-high" "${PREFIX}-ecs-memory-high" "${PREFIX}-ecs-task-count-low")
+ALARMS_JSON=$(aws cloudwatch describe-alarms --region "$AWS_REGION" \
+  --alarm-names "${EXPECTED_ALARMS[@]}" \
+  --query 'MetricAlarms[].AlarmName' --output json 2>/dev/null || echo '[]')
+for ALARM in "${EXPECTED_ALARMS[@]}"; do
+  if echo "$ALARMS_JSON" | jq -e --arg a "$ALARM" 'index($a)' >/dev/null 2>&1; then
+    pass "Alarm $ALARM exists"
+  else
+    fail "Alarm $ALARM: not found"
+  fi
+done
+echo "::endgroup::"
+
+# ── X-Ray ─────────────────────────────────────────────────────────────────────
+# The sampling rate is compared numerically inside jq (--argjson), not as a
+# string: the CLI serialises 1.0 as "1.0" but jq versions differ on whether
+# they re-print it as "1.0" or "1", so a string comparison would depend on the
+# runner's jq build.
+echo "::group::X-Ray"
+XRAY_RULE_JSON=$(aws xray get-sampling-rules --region "$AWS_REGION" \
+  --query "SamplingRuleRecords[?SamplingRule.RuleName=='${PREFIX}-sampling'].SamplingRule | [0]" \
+  --output json 2>/dev/null || echo '{}')
+assert_not_empty "X-Ray sampling rule" "$(echo "$XRAY_RULE_JSON" | jq -r '.RuleName // ""')"
+XRAY_RATE=$(echo "$XRAY_RULE_JSON" | jq -r '.FixedRate // "missing"')
+if echo "$XRAY_RULE_JSON" | jq -e --argjson want "$EXPECTED_XRAY_RATE" '(.FixedRate // -1) == $want' >/dev/null 2>&1; then
+  pass "X-Ray sampling rate = $XRAY_RATE"
+else
+  fail "X-Ray sampling rate: expected $EXPECTED_XRAY_RATE, got '$XRAY_RATE'"
+fi
+XRAY_LOG=$(aws logs describe-log-groups --region "$AWS_REGION" \
+  --log-group-name-prefix "${LOG_GROUP}/xray" \
+  --query 'logGroups[0].logGroupName' --output text 2>/dev/null || echo "missing")
+assert_not_empty "X-Ray daemon log group" "$XRAY_LOG"
 echo "::endgroup::"
 
 # ── IAM Roles ─────────────────────────────────────────────────────────────────
