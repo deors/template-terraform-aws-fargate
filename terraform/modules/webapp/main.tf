@@ -200,8 +200,13 @@ locals {
       containerPort = var.container_port
       protocol      = "tcp"
     }]
-    environment = [for k, v in local.container_env : { name = k, value = v }]
-    secrets     = local.container_secrets
+    # Base env vars plus, when the X-Ray sidecar is enabled, the daemon
+    # address within the task (awsvpc: localhost).
+    environment = concat(
+      [for k, v in local.container_env : { name = k, value = v }],
+      var.enable_xray ? [{ name = "AWS_XRAY_DAEMON_ADDRESS", value = "localhost:2000" }] : [],
+    )
+    secrets = local.container_secrets
     logConfiguration = {
       logDriver = "awslogs"
       options = {
@@ -210,8 +215,6 @@ locals {
         "awslogs-stream-prefix" = "ecs"
       }
     }
-    # X-Ray daemon address within the task (awsvpc: localhost)
-    environment_extra = var.enable_xray ? [{ name = "AWS_XRAY_DAEMON_ADDRESS", value = "localhost:2000" }] : []
   }]
 }
 
@@ -224,15 +227,7 @@ resource "aws_ecs_task_definition" "this" {
   execution_role_arn       = aws_iam_role.task_execution.arn
   task_role_arn            = aws_iam_role.task.arn
 
-  container_definitions = jsonencode(concat(
-    [merge(local.app_container[0], {
-      environment = concat(
-        [for k, v in local.container_env : { name = k, value = v }],
-        var.enable_xray ? [{ name = "AWS_XRAY_DAEMON_ADDRESS", value = "localhost:2000" }] : [],
-      )
-    })],
-    local.xray_container,
-  ))
+  container_definitions = jsonencode(concat(local.app_container, local.xray_container))
 
   tags = local.base_tags
 }
