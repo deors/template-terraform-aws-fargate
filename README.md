@@ -360,7 +360,7 @@ tofu -chdir=terraform/environments/$ENVIRONMENT apply tfplan
 ### Step 6 — Verify
 
 ```bash
-AWS_REGION=$AWS_REGION APP_NAME=$APP_NAME ENVIRONMENT=$ENVIRONMENT MAIN_DOMAIN=$MAIN_DOMAIN bash scripts/verify.sh
+./scripts/verify.sh
 ```
 
 Exits 0 if all assertions pass. A summary is written to `/tmp/verify-summary.txt`.
