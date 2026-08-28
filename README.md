@@ -14,23 +14,23 @@ When used with the **workshop-platform-eng** provisioning workflow:
 
 | Component | Description | Environment-Specific |
 |-----------|-------------|----------------------|
-| **ECS Cluster** | Fargate launch type with Container Insights | Container Insights enabled in all envs |
-| **ECS Service** | Desired task count, deployment controller | Rolling (dev) / CodeDeploy B/G (staging, prod) |
-| **Task Definition** | CPU/memory, container image, X-Ray sidecar | CPU/mem sized per environment |
-| **Application Load Balancer** | HTTP/HTTPS, health checks | Internet-facing (dev) / Internal (staging, prod) |
-| **Auto Scaling** | CPU + memory target-tracking policies | Disabled (dev) / 1–3 (staging) / 3–10 (prod) |
+| **Resource Groups** | Tag-based grouping of all resources | One per env, plus one for state backend |
 | **VPC** | Isolated per-environment CIDR blocks | 10.10/20/30.0.0/16 per env |
 | **Subnets** | Private (ECS) + Public (NAT, dev ALB) | 2 AZs per env |
 | **NAT Gateway** | Outbound internet for ECS tasks (ECR, AWS APIs) | 1 (dev/staging) / 1-per-AZ (prod) |
 | **Security Groups** | ALB → App least-privilege ingress | ALB open to internet (dev only) |
 | **Route 53 DNS** | Split-horizon: app FQDN alias record for the ALB | Public zone record (dev) / VPC-private zone (staging, prod) |
 | **VPC Flow Logs** | Traffic diagnostics to CloudWatch | All envs |
+| **Application Load Balancer** | HTTP/HTTPS, health checks | Internet-facing (dev) / Internal (staging, prod) |
+| **ECS Cluster** | Fargate launch type with Container Insights | Container Insights enabled in all envs |
+| **ECS Service** | Desired task count, deployment controller | Rolling (dev) / CodeDeploy B/G (staging, prod) |
+| **Task Definition** | CPU/memory, container image, X-Ray sidecar | CPU/mem sized per environment |
+| **Auto Scaling** | CPU + memory target-tracking policies | Disabled (dev) / 1–3 (staging) / 3–10 (prod) |
+| **CodeDeploy** | Blue/green traffic shifting | Disabled (dev) / Linear 10% (staging) / Linear 50% (prod) |
+| **IAM Task Roles** | Least-privilege execution + task roles | Per-environment resource scoping |
 | **CloudWatch Log Groups** | ECS container logs + X-Ray daemon logs | Retention: 30/60/90 days per env |
 | **CloudWatch Alarms** | CPU high, memory high, task count low | All envs |
 | **AWS X-Ray** | Distributed tracing with sampling rule | Sampling: 100% / 10% / 1% per env |
-| **IAM Task Roles** | Least-privilege execution + task roles | Per-environment resource scoping |
-| **CodeDeploy** | Blue/green traffic shifting | Disabled (dev) / Linear 10% (staging) / Linear 50% (prod) |
-| **Resource Groups** | Tag-based grouping of all resources | One per env, plus one for state backend |
 
 ---
 
@@ -43,18 +43,42 @@ Every provisioned resource is reachable through a tag-based AWS Resource Group:
 | `rg-<app_name>-<env>` | All resources for one environment — ECS, ALB, VPC, IAM, logs, alarms | Terraform, in this repo (per environment) |
 | `rg-<app_name>-tfstate` | The Terraform state S3 bucket | Bootstrap script in **workshop-platform-eng** |
 
-The state bucket sits in its own group rather than an environment group for two
-reasons: one bucket serves every environment (one state key each), so it carries
-no `environment` tag to match on; and it must exist *before* Terraform runs —
-it is the backend — so nothing in this repo can own it. See
-[Step 1](#step-1--bootstrap-state-bucket-one-time-per-appaccount) for where that
-script lives and why.
-
-Group membership is resolved by tag query, so any resource carrying the matching
-tags appears automatically:
+An AWS Resource Group is a **query, not a container**: membership is resolved
+by tag, so any resource carrying the matching tags appears automatically, and
+the group itself has no lifecycle over its members.
 
 - Environment groups match `application` + `environment` + `platform`
 - The tfstate group matches `application` + `managed-by=bootstrap-tfstate`
+
+Practical implications:
+
+- **Deletion**: removing resources is `tofu destroy`'s job — deleting a group
+  only removes the view and never touches a resource.
+- **Cost visibility**: the same tags drive per-environment spend in Cost
+  Explorer — filter on `application` + `environment`. (Tags must be activated
+  as cost allocation tags in the billing settings, once per account.)
+- **Access control**: IAM has no resource-group scope; the tag set doubles as
+  the access-control handle instead. Policies can condition on
+  `aws:ResourceTag/application` and `aws:ResourceTag/environment` (ABAC) to
+  grant a team access to one application's environment.
+
+A group answers "what is in this environment?" — to see what the application
+owns across environments, query the tags directly:
+
+```bash
+aws resourcegroupstaggingapi get-resources \
+  --tag-filters Key=application,Values=$APP_NAME \
+  --query 'ResourceTagMappingList[].ResourceARN' \
+  --output table
+```
+
+The state bucket sits in its own group rather than an environment group for two
+reasons: one bucket serves every environment (one state key each), so it carries
+no `environment` tag to match on; and it must exist *before* Terraform runs —
+it is the backend — so nothing in this repo can own it, and it must survive a
+`tofu destroy` of any environment. See
+[Step 1](#step-1--bootstrap-terraform-state-one-time-per-appaccount) for where that
+script lives and why.
 
 ---
 
@@ -77,36 +101,43 @@ scripts/
 ```
 
 State-backend bootstrap is not here — it lives in **workshop-platform-eng** as a
-cross-cutting platform concern. See [Step 1](#step-1--bootstrap-state-bucket-one-time-per-appaccount).
+cross-cutting platform concern. See [Step 1](#step-1--bootstrap-terraform-state-one-time-per-appaccount).
 
 ---
 
 ## Verification
 
 This template owns its own post-apply verification at the canonical path
-`scripts/verify.sh`. After `terraform apply`, the **workshop-platform-eng**
+`scripts/verify.sh`. After `tofu apply`, the **workshop-platform-eng**
 orchestrator checks out the generated `{app-name}-infra` repository and runs
 this script, then surfaces the pass/fail counts. Because the assertions live
 next to the Terraform that defines the expectations, the orchestrator stays
 template-agnostic: any infra template that exposes `scripts/verify.sh` plugs
 in without changing the platform.
 
-### Script contract
+### Interface
 
 | Variable | Required | Purpose |
 |----------|----------|---------|
-| `APP_NAME` | yes | Application name — the resource name prefix |
-| `ENVIRONMENT` | yes | `dev`, `staging`, or `prod` |
-| `AWS_REGION` | yes | Region the stack was applied to |
-| `MAIN_DOMAIN` | no | Root domain in Route 53. Adds certificate, DNS and HTTPS reachability checks |
-| `GITHUB_STEP_SUMMARY` | no | Appended with a markdown summary |
-| `VERIFY_SUMMARY_FILE` | no | Machine-readable summary path (default `/tmp/verify-summary.txt`) |
+| `AWS_REGION` | Yes | Region where all application resources are created |
+| `APP_NAME` | Yes | Application name |
+| `ENVIRONMENT` | Yes | `dev`, `staging`, `prod` |
+| `MAIN_DOMAIN` | No | Root domain in Route 53. Adds certificate, DNS and HTTPS reachability checks |
 
-| Exit | Meaning |
+### Outputs
+
+| Variable | Required | Purpose |
+|----------|----------|---------|
+| `GITHUB_STEP_SUMMARY` | -- | Path appended with a Markdown summary (set automatically by GitHub Actions) |
+| `VERIFY_SUMMARY_FILE` | -- | Machine-readable `key=value` summary path. Defaults to `/tmp/verify-summary.txt`. |
+
+### Exit codes
+
+| Code | Meaning |
 |------|---------|
 | `0` | Every check passed |
-| `1` | Checks ran, at least one failed |
-| `2` | Invalid invocation — a required variable is missing, or `ENVIRONMENT` is not one of `dev`/`staging`/`prod`. No checks ran. |
+| `1` | Checks ran; at least one failed |
+| `2` | Invalid invocation — a required variable is missing or `ENVIRONMENT` is not recognised. No checks ran. |
 
 **Every exit path writes the summary file** (and the markdown summary when
 `GITHUB_STEP_SUMMARY` is set), exit `2` included. A caller can always parse
@@ -115,16 +146,40 @@ never started". Invalid invocations report *all* problems at once rather than
 aborting on the first, so a caller missing two variables learns about both in one
 run.
 
-`AWS_REGION` is required with **no fallback** to `AWS_DEFAULT_REGION` or the ambient
-profile region. Almost every AWS API this script calls is regional, so an implicit
-region reports "missing" for a stack that is deployed and healthy somewhere else —
-the same reasoning that makes Terraform's `aws_region` a required input with no
-default. Callers must pass it explicitly.
+### What it checks
 
-To run it locally against a deployed environment (an active AWS session is required):
+Grouped assertions: ECS cluster (status, Container Insights), ECS service
+(status, running/desired counts, launch type), task definition (CPU, memory,
+network mode, roles), ALB (state, scheme, type) and its HTTPS listener's TLS
+policy against the TLS 1.3-only allow-list, target health, autoscaling
+(staging/prod), CloudWatch logs including per-environment retention
+(30/60/90 days), CloudWatch alarms (CPU, memory, task count — existence, not
+state, since fresh deployments sit in `INSUFFICIENT_DATA`), X-Ray (sampling
+rule, per-environment rate, daemon log group), IAM roles, CodeDeploy
+(staging/prod), networking (a VPC uniquely identified by its tags, flow
+logs), ACM certificate, Route 53 DNS (split-horizon aware: public record
+asserted in dev; in staging/prod the private zone and record are asserted
+present and the public record asserted **absent**), and the public endpoint.
+
+All but the last are control-plane assertions. The **public endpoint** check
+is the one that sends real traffic: an HTTPS `GET` against
+`<app>.<env>.<domain>` expecting `200`. Because `curl` validates the
+certificate chain by default, this doubles as proof the ACM certificate is
+serving correctly — a TLS failure surfaces as `000`, not a status code.
+
+That probe runs for **dev only**, whose ALB is internet-facing for exactly
+this purpose. Staging and prod use an internal ALB, so a request from a
+runner outside the VPC would fail on a perfectly healthy deployment; those
+environments are verified through the control plane alone. The certificate,
+DNS and probe groups run only when `MAIN_DOMAIN` is set — an HTTP-only
+deployment without it is valid, and those groups are skipped.
+
+### Running locally
+
+An active AWS session is required:
 
 ```bash
-APP_NAME=<app> ENVIRONMENT=<env> AWS_REGION=<region> MAIN_DOMAIN=<domain> bash scripts/verify.sh
+AWS_REGION=<region> APP_NAME=<app> ENVIRONMENT=<env> MAIN_DOMAIN=<domain> bash scripts/verify.sh
 ```
 
 ---
@@ -146,6 +201,7 @@ everywhere — TLS policy, tagging, encryption — are documented once under
 | **X-Ray sampling** | 100% — full capture while developing | 10% | 1% — low overhead at production volume |
 | **Deployment** | Rolling update, no CodeDeploy | CodeDeploy blue/green, linear 10% | CodeDeploy blue/green, linear 50%, auto-rollback |
 | **App DNS record** | Public zone — resolvable from anywhere | VPC-private zone — resolves only inside the VPC | VPC-private zone — resolves only inside the VPC |
+| **Post-apply probe** | HTTPS `GET` on the app FQDN, expects `200` | Control plane only | Control plane only |
 | **Checkov baseline** | `.checkov.nonprod.yaml` (relaxed) | `.checkov.nonprod.yaml` (relaxed) | `.checkov.yaml` (strict) |
 
 ---
@@ -163,7 +219,7 @@ everywhere — TLS policy, tagging, encryption — are documented once under
 
 - **Task Execution Role**: `AmazonECSTaskExecutionRolePolicy` + scoped Secrets Manager access for container secret injection
 - **Task Role**: Least-privilege — Secrets Manager read (`secretsmanager:GetSecretValue`) scoped to `{prefix}/*`, X-Ray write (when enabled)
-- **ECR Pull**: Via IAM task execution role (no registry credentials in task definitions or app settings)
+- **ECR Pull**: Via IAM task execution role (no registry credentials in the task definition or container environment)
 - **TLS**: TLS 1.3 only in all environments (`ELBSecurityPolicy-TLS13-1-3-2021-06`), enforced by a validation block on the module variable so it cannot be weakened per environment; a valid ACM certificate ARN is required
 
 ### Compliance
@@ -178,7 +234,10 @@ everywhere — TLS policy, tagging, encryption — are documented once under
 
 ### App Settings
 
-App-specific environment variables are passed via `app_settings` map in each environment's `.tfvars`. Example:
+App-specific environment variables are passed via `app_settings` map in each
+environment's `.tfvars`; they become plain environment variables on the
+container. Do not put secrets here — use
+[Secrets Manager references](#secrets-manager-integration) instead. Example:
 
 ```hcl
 app_settings = {
@@ -201,7 +260,11 @@ secrets_manager_arns = {
 
 ### Container Registry
 
-Pull images from ECR (private) or a public registry. ECR pull uses IAM roles — no credentials needed:
+Pull images from ECR (private, same account) or a public registry. The ECR
+pull is authenticated by the task execution role — no registry credentials
+anywhere. A cross-account ECR repository additionally needs a resource policy
+on the repository granting this account's execution role; the template does
+not manage that.
 
 ```hcl
 container_image = "123456789012.dkr.ecr.us-east-1.amazonaws.com/myapp:v1.2.3"
@@ -213,7 +276,11 @@ For public registries (Docker Hub, ECR Public):
 container_image = "public.ecr.aws/nginx/nginx:stable-alpine"
 ```
 
-### Custom Domain
+Private registries other than ECR (Docker Hub, GHCR) are **not supported** —
+the task definition carries no registry credentials by design. Mirror the
+image into ECR instead.
+
+### Hostnames and TLS
 
 Set `main_domain` to the root domain managed in Route 53. The networking module automatically:
 
@@ -244,18 +311,23 @@ The `tofu apply` blocks until ACM reports the certificate as `ISSUED` (typically
 
 ## Local End-to-End Test
 
-This section mirrors the steps the **workshop-platform-eng** provisioning workflow executes in CI. Run them locally to validate changes before pushing.
+This section mirrors the steps the **workshop-platform-eng** provisioning
+workflow executes in CI. Run them locally to validate changes before pushing.
 
 ### Prerequisites
 
-| Tool | Install |
-|------|---------|
-| AWS CLI v2 | `brew install awscli` |
-| OpenTofu | `brew install opentofu` |
-| Checkov | `pip install checkov` |
-| jq | `brew install jq` |
+The following tools must be installed and on `$PATH`:
 
-**AWS access**: credentials must be active before running any `tofu` command. The provider reads from the standard AWS credential chain (`default` profile, `AWS_PROFILE` env var, `~/.aws/credentials`). Login and/or verify your session before proceeding:
+| Tool | Purpose |
+|------|---------|
+| [`aws`](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html) | AWS CLI v2 — resource queries and auth |
+| [`tofu`](https://opentofu.org/docs/intro/install/) | OpenTofu — plan, apply, destroy |
+| [`checkov`](https://www.checkov.io/2.Basics/Installing%20Checkov.html) | Infrastructure policy enforcement |
+| [`jq`](https://jqlang.github.io/jq/) | JSON processing in `scripts/verify.sh` |
+
+**AWS access**: credentials must be active before running any `aws` or `tofu`
+command. Login and/or verify your session
+before proceeding:
 
 ```bash
 aws login
@@ -263,15 +335,9 @@ aws login
 aws sts get-caller-identity
 ```
 
-**Container image**: the ECS service needs a reachable image. Use a public placeholder for initial validation:
-
-```bash
-CONTAINER_IMAGE="public.ecr.aws/nginx/nginx:stable-alpine"
-```
-
 ---
 
-### Step 1 — Bootstrap state bucket (one-time per app/account)
+### Step 1 — Bootstrap Terraform state (one-time per app/account)
 
 > **State bootstrapping is a cross-cutting concern owned by the orchestrator, not by individual
 > infrastructure templates.** The bootstrap script lives in the **workshop-platform-eng**
@@ -282,36 +348,36 @@ CONTAINER_IMAGE="public.ecr.aws/nginx/nginx:stable-alpine"
 Export shared variables first — these are reused in every subsequent command:
 
 ```bash
+export AWS_REGION=eu-west-1
 export APP_NAME=myapp
 export ENVIRONMENT=dev
 export MAIN_DOMAIN=example.com
-export AWS_REGION=eu-west-1
 ```
 
 From the **workshop-platform-eng** repository:
 
 ```bash
 cd /path/to/workshop-platform-eng
-./scripts/bootstrap-tfstate.sh \
-  --app-name $APP_NAME \
-  --aws-region $AWS_REGION
+./scripts/bootstrap-tfstate-aws.sh \
+  --aws-region $AWS_REGION \
+  --app-name $APP_NAME
 ```
 
-Outputs `TFSTATE_BUCKET` (e.g. `tf-state-myapp-12345678`) and `TFSTATE_REGION`
-(of course, it will be the same as `AWS_REGION`). Store these for the init step.
+Creates a dedicated AWS S3 bucket for remote state (idempotent).
+
+Outputs `TFSTATE_BUCKET` (e.g. `tf-state-myapp-12345678`). Store it for the init step.
 
 ### Step 2 — Security scan (Checkov)
 
-Run Checkov before `tofu plan` to catch policy violations early.
+Run Checkov before `tofu plan` to catch policy violations before any state is touched.
 Each environment is scanned with its own baseline: dev and staging use the
 relaxed config, prod the strict one. Checkov resolves the shared modules with
 the values each environment passes in, so module code is assessed three times —
 once per environment, under its real configuration.
 
 Do **not** scan `terraform/modules` on its own: with no caller, Checkov judges
-the module *defaults*, which are deliberately non-prod-shaped (single NAT
-gateway, no autoscaling, no blue/green), and the strict baseline fails checks
-that every actual deployment satisfies.
+the module *defaults*, which are deliberately non-prod-shaped, and the strict
+baseline fails checks that every actual deployment satisfies.
 
 ```bash
 # dev
@@ -329,18 +395,20 @@ both config files carries a stated reason.
 
 ### Step 3 — Init
 
-The `-backend-config="region=..."` flag here sets the **S3 bucket region** (where the Terraform state file is stored). It does **not** control where AWS resources are deployed — that is `aws_region` in the next step.
+The `-backend-config="region=..."` flag here sets the **S3 bucket region**
+(where the Terraform state file is stored). It does **not** control where AWS
+resources are deployed — that is `aws_region` in the next step. For consistency,
+the S3 bucket region is the same as the deployment region, but it does not have
+to be.
 
 ```bash
 tofu -chdir=terraform/environments/$ENVIRONMENT init \
+  -backend-config="region=$AWS_REGION" \
   -backend-config="bucket=$TFSTATE_BUCKET" \
-  -backend-config="key=$ENVIRONMENT/terraform.tfstate" \
-  -backend-config="region=$TFSTATE_REGION"
+  -backend-config="key=$ENVIRONMENT/terraform.tfstate"
 ```
 
 ### Step 4 — Plan
-
-`aws_region` is required and has no default. Omitting it is an error — OpenTofu will stop and ask. Pass it explicitly every time to prevent accidental cross-region deployments. Typically, it will be the same as the region used to create the S3 backend bucket.
 
 ```bash
 tofu -chdir=terraform/environments/$ENVIRONMENT plan \
@@ -353,11 +421,20 @@ tofu -chdir=terraform/environments/$ENVIRONMENT plan \
   -out=tfplan
 ```
 
-The `container_port` (default `8080`) and `health_check_path` (default `/health`) override above match the nginx placeholder image. Replace with your application's actual values for a real deployment.
+This plan for `dev` deploys a public placeholder image
+(`public.ecr.aws/nginx/nginx:stable-alpine`) with `container_port = 80`
+and `health_check_path = "/"`, so the template can be applied and verified end
+to end before a real application image exists. Swap `container_image`,
+`container_port`, and `health_check_path` for your own app's values when moving
+past validation.
 
-The ACM certificate (e.g., `myapp.dev.example.com`) is issued and DNS-validated automatically during apply. The public hosted zone for `main_domain` must exist in the same AWS account.
+The ACM certificate (e.g., `myapp.dev.example.com`) is issued and DNS-validated
+automatically during apply. The public hosted zone for `main_domain` must exist
+in the same AWS account.
 
-Review the plan output before applying.
+Review the plan output before applying — confirm the region for resources is the
+one you intended, and that the resource count matches expectations for the
+environment.
 
 ### Step 5 — Apply
 
@@ -371,9 +448,12 @@ tofu -chdir=terraform/environments/$ENVIRONMENT apply tfplan
 ./scripts/verify.sh
 ```
 
-Exits 0 if all assertions pass. A summary is written to `/tmp/verify-summary.txt`.
+Exits `0` if all assertions pass. A summary is written to
+`/tmp/verify-summary.txt`.
 
-`MAIN_DOMAIN` is optional. When set, the script adds an end-to-end HTTPS check against `<app>.<env>.<domain>` — but only for internet-facing environments (dev). Staging and prod use an internal ALB so no public DNS check runs regardless of `MAIN_DOMAIN`.
+`MAIN_DOMAIN` is optional. When set, the script adds an end-to-end HTTPS check
+against `<app>.<env>.<domain>` — but only for `dev`; `staging` and `prod` use
+the internal ALB as they are not exposed to the Internet.
 
 ### Step 7 — Destroy (teardown)
 
