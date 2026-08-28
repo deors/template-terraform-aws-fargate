@@ -352,6 +352,9 @@ export AWS_REGION=eu-west-1
 export APP_NAME=myapp
 export ENVIRONMENT=dev
 export MAIN_DOMAIN=example.com
+
+export APP_SHORT=$(echo "$APP_NAME" | tr '[:upper:]' '[:lower:]' | tr -d '_' | cut -c1-20)
+export ACCT_SHORT=$(aws sts get-caller-identity --query Account --output text | cut -c1-8)
 ```
 
 From the **workshop-platform-eng** repository:
@@ -364,8 +367,6 @@ cd /path/to/workshop-platform-eng
 ```
 
 Creates a dedicated AWS S3 bucket for remote state (idempotent).
-
-Outputs `TFSTATE_BUCKET` (e.g. `tf-state-myapp-12345678`). Store it for the init step.
 
 ### Step 2 — Security scan (Checkov)
 
@@ -404,7 +405,7 @@ to be.
 ```bash
 tofu -chdir=terraform/environments/$ENVIRONMENT init \
   -backend-config="region=$AWS_REGION" \
-  -backend-config="bucket=$TFSTATE_BUCKET" \
+  -backend-config="bucket=tf-state-${APP_SHORT}-${ACCT_SHORT}" \
   -backend-config="key=$ENVIRONMENT/terraform.tfstate"
 ```
 
