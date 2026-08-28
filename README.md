@@ -255,9 +255,11 @@ This section mirrors the steps the **workshop-platform-eng** provisioning workfl
 | Checkov | `pip install checkov` |
 | jq | `brew install jq` |
 
-**AWS access**: credentials must be active before running any `tofu` command. The provider reads from the standard AWS credential chain (`default` profile, `AWS_PROFILE` env var, `~/.aws/credentials`). Verify your session is valid before proceeding:
+**AWS access**: credentials must be active before running any `tofu` command. The provider reads from the standard AWS credential chain (`default` profile, `AWS_PROFILE` env var, `~/.aws/credentials`). Login and/or verify your session before proceeding:
 
 ```bash
+aws login
+# and/or
 aws sts get-caller-identity
 ```
 
@@ -271,22 +273,32 @@ CONTAINER_IMAGE="public.ecr.aws/nginx/nginx:stable-alpine"
 
 ### Step 1 — Bootstrap state bucket (one-time per app/account)
 
-**This step does not run from this repository.** The state-backend bootstrap script
-lives in **workshop-platform-eng**. Run it from a
-checkout of that repo:
+> **State bootstrapping is a cross-cutting concern owned by the orchestrator, not by individual
+> infrastructure templates.** The bootstrap script lives in the **workshop-platform-eng**
+> repository and must be run from there. Each template is deliberately free of bootstrap logic —
+> the orchestrator is the single place to update when storage naming conventions, retention
+> policies, or cloud targets change.
+
+Export shared variables first — these are reused in every subsequent command:
+
+```bash
+export APP_NAME=myapp
+export ENVIRONMENT=dev
+export MAIN_DOMAIN=example.com
+export AWS_REGION=eu-west-1
+```
+
+From the **workshop-platform-eng** repository:
 
 ```bash
 cd /path/to/workshop-platform-eng
-./scripts/bootstrap-tfstate.sh --app-name myapp --aws-region eu-west-1
+./scripts/bootstrap-tfstate.sh \
+  --app-name $APP_NAME \
+  --aws-region $AWS_REGION
 ```
 
-Outputs `TFSTATE_BUCKET` (e.g. `tf-state-myapp-12345678`) and `TFSTATE_REGION` (e.g. `eu-west-1`). Store these for the init step.
-
-State bootstrap is a **cross-cutting platform concern, not a per-template
-responsibility**. The backend has to exist before any template can `init`, one
-bucket serves every environment of an application, and the same bootstrap applies
-across cloud targets — so the orchestrator owns it once instead of each
-infrastructure template shipping and maintaining its own near-duplicate copy.
+Outputs `TFSTATE_BUCKET` (e.g. `tf-state-myapp-12345678`) and `TFSTATE_REGION`
+(of course, it will be the same as `AWS_REGION`). Store these for the init step.
 
 ### Step 2 — Security scan (Checkov)
 
@@ -320,10 +332,6 @@ both config files carries a stated reason.
 The `-backend-config="region=..."` flag here sets the **S3 bucket region** (where the Terraform state file is stored). It does **not** control where AWS resources are deployed — that is `aws_region` in the next step.
 
 ```bash
-export AWS_REGION=eu-west-1
-export APP_NAME=myapp
-export MAIN_DOMAIN=example.com
-export ENVIRONMENT=dev
 tofu -chdir=terraform/environments/$ENVIRONMENT init \
   -backend-config="bucket=$TFSTATE_BUCKET" \
   -backend-config="key=$ENVIRONMENT/terraform.tfstate" \
@@ -337,11 +345,11 @@ tofu -chdir=terraform/environments/$ENVIRONMENT init \
 ```bash
 tofu -chdir=terraform/environments/$ENVIRONMENT plan \
   -var="aws_region=$AWS_REGION" \
+  -var="main_domain=$MAIN_DOMAIN" \
   -var="app_name=$APP_NAME" \
   -var="container_image=public.ecr.aws/nginx/nginx:stable-alpine" \
   -var="container_port=80" \
   -var="health_check_path=/" \
-  -var="main_domain=$MAIN_DOMAIN" \
   -out=tfplan
 ```
 
@@ -372,11 +380,11 @@ Exits 0 if all assertions pass. A summary is written to `/tmp/verify-summary.txt
 ```bash
 tofu -chdir=terraform/environments/$ENVIRONMENT destroy \
   -var="aws_region=$AWS_REGION" \
+  -var="main_domain=$MAIN_DOMAIN" \
   -var="app_name=$APP_NAME" \
   -var="container_image=public.ecr.aws/nginx/nginx:stable-alpine" \
   -var="container_port=80" \
-  -var="health_check_path=/" \
-  -var="main_domain=$MAIN_DOMAIN"
+  -var="health_check_path=/"
 ```
 
 ---
