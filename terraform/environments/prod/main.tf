@@ -96,9 +96,9 @@ module "webapp" {
   certificate_arn = module.networking.certificate_arn
   ssl_policy      = "ELBSecurityPolicy-TLS13-1-3-2021-06"
 
-  # Prod: mandatory CodeDeploy blue/green, linear 50% traffic shift for safe rollout
+  # Prod: mandatory CodeDeploy blue/green, linear 10% traffic shift for safe rollout
   enable_blue_green            = true
-  codedeploy_deployment_config = "CodeDeployDefault.ECSLinear50PercentEvery1Minutes"
+  codedeploy_deployment_config = "CodeDeployDefault.ECSLinear10PercentEvery1Minutes"
 
   app_settings = var.app_settings
 

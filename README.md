@@ -26,7 +26,7 @@ When used with the **workshop-platform-eng** provisioning workflow:
 | **ECS Service** | Desired task count, deployment controller | Rolling (dev) / CodeDeploy B/G (staging, prod) |
 | **Task Definition** | CPU/memory, container image, X-Ray sidecar | CPU/mem sized per environment |
 | **Auto Scaling** | CPU + memory target-tracking policies | Disabled (dev) / 1–3 (staging) / 3–10 (prod) |
-| **CodeDeploy** | Blue/green traffic shifting | Disabled (dev) / Linear 10% (staging) / Linear 50% (prod) |
+| **CodeDeploy** | Blue/green traffic shifting | Disabled (dev) / Linear 10% (staging, prod) |
 | **IAM Task Roles** | Least-privilege execution + task roles | Per-environment resource scoping |
 | **CloudWatch Log Groups** | ECS container logs + X-Ray daemon logs | Retention: 30/60/90 days per env |
 | **CloudWatch Alarms** | CPU high, memory high, task count low | All envs |
@@ -199,7 +199,7 @@ everywhere — TLS policy, tagging, encryption — are documented once under
 | **VPC CIDR** | `10.10.0.0/16` | `10.20.0.0/16` | `10.30.0.0/16` |
 | **Log retention** | 30 days | 60 days | 90 days |
 | **X-Ray sampling** | 100% — full capture while developing | 10% | 1% — low overhead at production volume |
-| **Deployment** | Rolling update, no CodeDeploy | CodeDeploy blue/green, linear 10% | CodeDeploy blue/green, linear 50%, auto-rollback |
+| **Deployment** | Rolling update, no CodeDeploy | CodeDeploy blue/green, linear 10%, auto-rollback | CodeDeploy blue/green, linear 10%, auto-rollback |
 | **App DNS record** | Public zone — resolvable from anywhere | VPC-private zone — resolves only inside the VPC | VPC-private zone — resolves only inside the VPC |
 | **Post-apply probe** | HTTPS `GET` on the app FQDN, expects `200` | Control plane only | Control plane only |
 | **Checkov baseline** | `.checkov.nonprod.yaml` (relaxed) | `.checkov.nonprod.yaml` (relaxed) | `.checkov.yaml` (strict) |
