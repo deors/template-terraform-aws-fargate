@@ -195,7 +195,7 @@ everywhere — TLS policy, tagging, encryption — are documented once under
 | **Compute** | 0.25 vCPU / 512 MiB | 0.5 vCPU / 1024 MiB | 1 vCPU / 2048 MiB |
 | **Instances** | 1 fixed task, no autoscaling | Autoscale 1–3 | Autoscale 3–10 (min 3 for cross-AZ spread) |
 | **Availability** | Single AZ preferred, single NAT GW | Multi-AZ, 2 private subnets | Multi-AZ, NAT GW per AZ |
-| **ALB** | Internet-facing — public access for CI smoke tests | Internal (private subnets) | Internal, deletion protection enabled |
+| **ALB** | Internet-facing — public access for CI smoke tests | Internal (private subnets) | Internal (private subnets) |
 | **VPC CIDR** | `10.10.0.0/16` | `10.20.0.0/16` | `10.30.0.0/16` |
 | **Log retention** | 30 days | 60 days | 90 days |
 | **X-Ray sampling** | 100% — full capture while developing | 10% | 1% — low overhead at production volume |

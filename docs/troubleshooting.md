@@ -58,17 +58,17 @@ aws route53 list-hosted-zones-by-name --dns-name example.com
 ### Checkov fails on `prod` but passed on `dev`/`staging`
 
 Intended. `prod` is scanned against `.checkov.yaml`; `dev` and `staging` use
-`.checkov.nonprod.yaml`, which additionally skips four prod-only baselines:
+`.checkov.nonprod.yaml`, which additionally skips three prod-only baselines:
 
 | Check | Why it's skipped for non-prod |
 |-------|-------------------------------|
-| `CKV_AWS_150` | ALB deletion protection — off in dev/staging for fast teardown cycles |
 | `CKV_AWS_260` | SG restricts all traffic — the dev ALB SG accepts `0.0.0.0/0` for public access |
 | `CKV2_AWS_5` | SG attached to resource — false positive: SGs are defined in the networking module and attached in webapp |
 | `CKV2_AWS_19` | EIP attached to EC2 — false positive: the EIP is attached to the NAT gateway |
 
 Both configs skip a further set in every environment (ALB access logs, WAF,
-KMS CMKs, image-tag pinning, non-root containers, ALB→container HTTP); each
+KMS CMKs, image-tag pinning, non-root containers, ALB→container HTTP, ALB
+deletion protection); each
 entry carries its rationale inline in the file. The ALB→container one
 (`CKV_AWS_378`) has a fuller write-up in
 [Encrypting the ALB → Fargate hop](docs/ALB-BACKEND-TLS.md), which records why

@@ -24,6 +24,9 @@ skip-check:
   # ── ALB-to-container HTTP – TLS terminates at the ALB ─────────────────────
   - CKV_AWS_378   # ALB target group uses HTTP: internal VPC traffic; TLS terminates at the ALB
 
+  # ── ALB deletion protection – deliberately off in all environments ─────────
+  - CKV_AWS_150   # ALB deletion protection: everything around the ALB is deletable and the ALB is recreated by a single apply; protecting it alone only breaks teardown
+
   # ── HTTP redirect listener – TLS not applicable ────────────────────────────
   # CKV_AWS_103 and CKV2_AWS_74 are NOT skipped here: all environments now use
   # ELBSecurityPolicy-TLS13-1-3-2021-06, enforced by a validation block on the
@@ -32,7 +35,6 @@ skip-check:
   # (HTTP cannot use TLS by definition).
 
   # ── Prod-only baselines, skipped for dev/staging ────────────────────────────
-  - CKV_AWS_150   # ALB deletion protection: dev/staging skip for faster teardown cycles
   - CKV_AWS_260   # SG restricts all traffic: dev ALB SG accepts 0.0.0.0/0 for public internet-facing access
   - CKV2_AWS_5    # SG attached to resource: false-positive when SGs are defined in the networking module and attached in the webapp module
   - CKV2_AWS_19   # EIP attached to EC2: EIP is attached to NAT Gateway (not EC2), false-positive

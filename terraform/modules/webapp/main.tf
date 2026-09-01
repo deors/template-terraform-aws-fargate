@@ -259,7 +259,6 @@ resource "aws_lb" "this" {
   subnets            = var.alb_subnet_ids
 
   drop_invalid_header_fields = true
-  enable_deletion_protection = var.environment == "prod"
 
   tags = local.base_tags
 }
