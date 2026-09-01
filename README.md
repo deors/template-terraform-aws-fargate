@@ -232,12 +232,30 @@ everywhere — TLS policy, tagging, encryption — are documented once under
 
 ## Customization
 
+### Container Contract
+
+The template is built around the archetype's container contract: **port
+8080, health endpoint `/health`**. `health_check_path` defaults to `/health`
+and is what the load balancer health checks poll. `container_port` defaults
+to `8080` and drives the task definition's port mapping, both target groups,
+and the app security group's ingress rule — the only path traffic can reach
+the container on, fixed at provision time.
+
+Do not set `PORT` directly in `app_settings` — `container_port` is the
+single source of truth and the template injects `PORT` from it.
+
 ### App Settings
 
 App-specific environment variables are passed via `app_settings` map in each
 environment's `.tfvars`; they become plain environment variables on the
 container. Do not put secrets here — use
-[Secrets Manager references](#secrets-manager-integration) instead. Example:
+[Secrets Manager references](#secrets-manager-integration) instead.
+
+The template always injects the archetype's environment-variable contract:
+`PORT` (the container port), `APP_NAME`, `APP_ENV` (the environment name),
+and `IMAGE_TAG` (parsed from the image reference). Applications should read
+these rather than invent their own names; a key redefined in `app_settings`
+overrides the injected value. Example:
 
 ```hcl
 app_settings = {
@@ -245,6 +263,14 @@ app_settings = {
   API_KEY      = "..."
 }
 ```
+
+Terraform owns these settings only at creation: it seeds the initial set and
+then ignores drift on them. From the first deployment onwards the pipeline
+owns them — it restamps the identity variables on each deploy and adds new
+settings as the application evolves, and a re-apply never strips them. The
+flip side: changing these inputs in Terraform affects only newly created
+stacks; on a running app, settings are applied through the deployment
+pipeline.
 
 ### Secrets Manager Integration
 
@@ -260,25 +286,39 @@ secrets_manager_arns = {
 
 ### Container Registry
 
-Pull images from ECR (private, same account) or a public registry. The ECR
-pull is authenticated by the task execution role — no registry credentials
-anywhere. A cross-account ECR repository additionally needs a resource policy
-on the repository granting this account's execution role; the template does
-not manage that.
+The pull happens at runtime, by the task execution role — never by the
+identity running Terraform. The auth path is selected by the image reference
+itself:
+
+| Registry | Configure | Pull authenticates as |
+|---|---|---|
+| Public (`public.ecr.aws`, public Docker Hub/GHCR) | `container_image` only | Anonymous — no credentials involved |
+| Private ECR, same account | `container_image` only | The task execution role (`AmazonECSTaskExecutionRolePolicy`) |
+| Private ECR, cross-account | `container_image`, plus a resource policy on the repository granting this account's execution role — not managed by this template | The task execution role, authorized by the repository policy |
 
 ```hcl
 container_image = "123456789012.dkr.ecr.us-east-1.amazonaws.com/myapp:v1.2.3"
 ```
 
-For public registries (Docker Hub, ECR Public):
+For public registries:
 
 ```hcl
 container_image = "public.ecr.aws/nginx/nginx:stable-alpine"
 ```
 
+Anonymous Docker Hub pulls are rate-limited per source IP, and every task in
+an environment egresses through the NAT gateway address(es) — scale-outs can
+hit the limit as one client. Prefer `public.ecr.aws` or an ECR mirror.
+
 Private registries other than ECR (Docker Hub, GHCR) are **not supported** —
-the task definition carries no registry credentials by design. Mirror the
-image into ECR instead.
+the task definition carries no registry credentials by design: there are no
+registry credential variables, and nothing registry-related is persisted in
+state. Mirror the image into ECR instead.
+
+After first creation, CI/CD owns which image runs (the template ignores
+drift on the service's task definition), so `container_image` affects only
+newly created stacks; on a running app, images are rolled out through the
+deployment pipeline.
 
 ### Hostnames and TLS
 

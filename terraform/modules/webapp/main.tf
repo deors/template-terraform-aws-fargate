@@ -15,11 +15,24 @@ locals {
   # CodeDeploy requires two target groups; rolling uses one
   create_green_tg = var.enable_blue_green
 
-  # Container environment variables merged with observability defaults
+  # Tag from the image reference: after "@" for digest pins; otherwise only the
+  # last path segment may carry a tag (a ":" in an earlier segment is a
+  # registry port, e.g. "registry:5000/img").
+  image_last_segment = element(split("/", var.container_image), length(split("/", var.container_image)) - 1)
+  image_tag = strcontains(var.container_image, "@") ? split("@", var.container_image)[1] : (
+    strcontains(local.image_last_segment, ":") ? split(":", local.image_last_segment)[1] : "latest"
+  )
+
+  # Container environment seeded at creation; caller settings take precedence
   container_env = merge(
     {
-      PORT        = tostring(var.container_port)
-      ENVIRONMENT = var.environment
+      # Container port contract: the port the app must listen on
+      PORT = tostring(var.container_port)
+
+      # App identity contract; the pipeline restamps these on each deploy
+      APP_NAME  = var.name
+      APP_ENV   = var.environment
+      IMAGE_TAG = local.image_tag
     },
     var.app_settings,
   )
