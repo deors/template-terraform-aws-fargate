@@ -39,6 +39,11 @@
 # All three exits write the summary file and, when GITHUB_STEP_SUMMARY is set,
 # the markdown summary — including exit 2. A caller can therefore always parse
 # the summary file and never has to distinguish "failed" from "never started".
+#
+# Assertions read control-plane state point-in-time. The one exception: values
+# that converge in the minutes after apply (task counts, target health) get a
+# BOUNDED wait first, and an expired wait still fails the run. Everything else
+# stays unretried so a genuine misconfiguration fails immediately.
 
 set -uo pipefail   # no -e: collect all failures, then exit at the end
 
@@ -226,6 +231,16 @@ assert_eq "Service status" "$SVC_STATUS" "ACTIVE"
 # status INACTIVE but still reports launchType FARGATE, so that assertion would
 # pass on a torn-down stack.
 if [[ "$SVC_STATUS" == "ACTIVE" ]]; then
+  # Task counts converge after the first apply (ENI provisioning, image pull,
+  # ALB health checks, grace period). Bounded wait: 15s × 40 attempts, max 10
+  # minutes. On timeout, fall through — the assertions below then report the
+  # actual counts and the rest of the script still runs.
+  echo "  … waiting for first-deploy convergence (ecs wait services-stable, max 10m)"
+  if ! aws ecs wait services-stable --region "$AWS_REGION" \
+      --cluster "$CLUSTER" --services "$SERVICE" 2>/dev/null; then
+    echo "  ! services-stable wait expired — asserting on current counts"
+  fi
+  SVC_JSON=$(aws ecs describe-services --region "$AWS_REGION" --cluster "$CLUSTER" --services "$SERVICE" --query 'services[0]' --output json 2>/dev/null || echo '{}')
   RUNNING=$(echo "$SVC_JSON" | jq -r '.runningCount // 0')
   assert_ge "Running tasks" "$RUNNING" "$EXPECTED_MIN_TASKS"
   DESIRED=$(echo "$SVC_JSON" | jq -r '.desiredCount // 0')
@@ -297,8 +312,15 @@ if [[ -n "$ALB_ARN" && "$ALB_ARN" != "null" ]]; then
   TG_JSON=$(aws elbv2 describe-target-groups --region "$AWS_REGION" --load-balancer-arn "$ALB_ARN" --query 'TargetGroups[0]' --output json 2>/dev/null || echo '{}')
   TG_ARN=$(echo "$TG_JSON" | jq -r '.TargetGroupArn // ""')
   if [[ -n "$TG_ARN" && "$TG_ARN" != "null" ]]; then
-    HEALTH_JSON=$(aws elbv2 describe-target-health --region "$AWS_REGION" --target-group-arn "$TG_ARN" --query 'TargetHealthDescriptions' --output json 2>/dev/null || echo '[]')
-    HEALTHY=$(echo "$HEALTH_JSON" | jq '[.[] | select(.TargetHealth.State=="healthy")] | length')
+    # Target registration can lag service stability; bounded retry, then
+    # assert on the final value.
+    HEALTHY=0
+    for ATTEMPT in 1 2 3 4 5 6 7 8; do
+      HEALTH_JSON=$(aws elbv2 describe-target-health --region "$AWS_REGION" --target-group-arn "$TG_ARN" --query 'TargetHealthDescriptions' --output json 2>/dev/null || echo '[]')
+      HEALTHY=$(echo "$HEALTH_JSON" | jq '[.[] | select(.TargetHealth.State=="healthy")] | length')
+      [[ "$HEALTHY" =~ ^[0-9]+$ ]] && [[ "$HEALTHY" -ge "$EXPECTED_MIN_TASKS" ]] && break
+      [[ "$ATTEMPT" -lt 8 ]] && sleep 15
+    done
     assert_ge "Healthy targets" "$HEALTHY" "$EXPECTED_MIN_TASKS"
   else
     fail "ALB target group ARN: not found"
