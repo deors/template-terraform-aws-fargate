@@ -74,8 +74,10 @@ module "webapp" {
   app_sg_id      = module.networking.app_sg_id
   alb_internal   = true
 
-  container_image = var.container_image
-  container_port  = var.container_port
+  container_image                  = var.container_image
+  registry_credentials_secret_arn  = var.registry_credentials_secret_arn
+  registry_credentials_kms_key_arn = var.registry_credentials_kms_key_arn
+  container_port                   = var.container_port
 
   # Staging: medium Fargate size — prod-readiness testing
   task_cpu    = 512

@@ -91,6 +91,31 @@ resource "aws_iam_role_policy" "task_execution_secrets" {
   })
 }
 
+# Registry credentials: ECS fetches the secret at task launch to authenticate
+# the image pull (repositoryCredentials on the container definition).
+resource "aws_iam_role_policy" "task_execution_registry_credentials" {
+  count = var.registry_credentials_secret_arn != "" ? 1 : 0
+  name  = "registry-credentials-access"
+  role  = aws_iam_role.task_execution.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = concat(
+      [{
+        Effect   = "Allow"
+        Action   = ["secretsmanager:GetSecretValue"]
+        Resource = var.registry_credentials_secret_arn
+      }],
+      # Only when the secret is encrypted with a customer-managed key.
+      var.registry_credentials_kms_key_arn != "" ? [{
+        Effect   = "Allow"
+        Action   = ["kms:Decrypt"]
+        Resource = var.registry_credentials_kms_key_arn
+      }] : []
+    )
+  })
+}
+
 # ──────────────────────────────────────────────────────────────────────────────
 # IAM – Task Role
 # Assumed by the running container for AWS SDK calls (Secrets Manager,
@@ -203,7 +228,7 @@ locals {
     }
   }] : []
 
-  app_container = [{
+  app_container = [merge({
     name      = var.name
     image     = var.container_image
     essential = true
@@ -228,7 +253,9 @@ locals {
         "awslogs-stream-prefix" = "ecs"
       }
     }
-  }]
+    }, var.registry_credentials_secret_arn != "" ? {
+    repositoryCredentials = { credentialsParameter = var.registry_credentials_secret_arn }
+  } : {})]
 }
 
 resource "aws_ecs_task_definition" "this" {

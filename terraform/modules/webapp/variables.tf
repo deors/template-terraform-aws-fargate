@@ -98,6 +98,18 @@ variable "secrets_manager_arns" {
   default     = {}
 }
 
+variable "registry_credentials_secret_arn" {
+  description = "ARN of a Secrets Manager secret holding {\"username\": ..., \"password\": ...} for the container registry. Required for private registries other than ECR (e.g. GHCR); leave empty for anonymous or ECR pulls."
+  type        = string
+  default     = ""
+}
+
+variable "registry_credentials_kms_key_arn" {
+  description = "KMS key ARN encrypting registry_credentials_secret_arn, when it is a customer-managed key (the execution role gets kms:Decrypt on it). Leave empty for the AWS-managed key."
+  type        = string
+  default     = ""
+}
+
 # ── Health check ───────────────────────────────────────────────────────────
 
 variable "health_check_path" {

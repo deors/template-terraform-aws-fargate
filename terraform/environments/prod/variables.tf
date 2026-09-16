@@ -13,6 +13,18 @@ variable "container_image" {
   type        = string
 }
 
+variable "registry_credentials_secret_arn" {
+  description = "Secrets Manager secret ARN with the registry credentials ({\"username\", \"password\"}); required for private registries other than ECR, empty for anonymous or ECR pulls"
+  type        = string
+  default     = ""
+}
+
+variable "registry_credentials_kms_key_arn" {
+  description = "KMS key ARN of the registry credentials secret when it uses a customer-managed key; empty for the AWS-managed key"
+  type        = string
+  default     = ""
+}
+
 variable "container_port" {
   description = "TCP port the application container listens on (default 8080)"
   type        = number

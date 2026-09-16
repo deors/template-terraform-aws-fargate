@@ -219,7 +219,7 @@ everywhere — TLS policy, tagging, encryption — are documented once under
 
 - **Task Execution Role**: `AmazonECSTaskExecutionRolePolicy` + scoped Secrets Manager access for container secret injection
 - **Task Role**: Least-privilege — Secrets Manager read (`secretsmanager:GetSecretValue`) scoped to `{prefix}/*`, X-Ray write (when enabled)
-- **ECR Pull**: Via IAM task execution role (no registry credentials in the task definition or container environment)
+- **Image pull**: By the task execution role — ECR through `AmazonECSTaskExecutionRolePolicy`; other private registries through `repositoryCredentials` pointing at a Secrets Manager secret the role may read (never in the container environment)
 - **TLS**: TLS 1.3 only in all environments (`ELBSecurityPolicy-TLS13-1-3-2021-06`), enforced by a validation block on the module variable so it cannot be weakened per environment; a valid ACM certificate ARN is required
 
 ### Compliance
@@ -295,6 +295,7 @@ itself:
 | Public (`public.ecr.aws`, public Docker Hub/GHCR) | `container_image` only | Anonymous — no credentials involved |
 | Private ECR, same account | `container_image` only | The task execution role (`AmazonECSTaskExecutionRolePolicy`) |
 | Private ECR, cross-account | `container_image`, plus a resource policy on the repository granting this account's execution role — not managed by this template | The task execution role, authorized by the repository policy |
+| Private GHCR / Docker Hub / any registry with username + password | `container_image`, plus `registry_credentials_secret_arn` (and `registry_credentials_kms_key_arn` if the secret uses a customer-managed key) | The credentials in the secret, fetched by the task execution role at task launch (`repositoryCredentials`) |
 
 ```hcl
 container_image = "123456789012.dkr.ecr.us-east-1.amazonaws.com/myapp:v1.2.3"
@@ -310,10 +311,27 @@ Anonymous Docker Hub pulls are rate-limited per source IP, and every task in
 an environment egresses through the NAT gateway address(es) — scale-outs can
 hit the limit as one client. Prefer `public.ecr.aws` or an ECR mirror.
 
-Private registries other than ECR (Docker Hub, GHCR) are **not supported** —
-the task definition carries no registry credentials by design: there are no
-registry credential variables, and nothing registry-related is persisted in
-state. Mirror the image into ECR instead.
+For private registries other than ECR, store the pull credentials once per
+account in Secrets Manager and pass the secret's ARN. The secret is a JSON
+object with exactly these two keys; the value never enters Terraform state —
+only the ARN does:
+
+```bash
+aws secretsmanager create-secret \
+  --name "platform-eng/registry-pull" \
+  --secret-string '{"username":"<registry-login>","password":"<registry-token>"}'
+```
+
+```hcl
+container_image                 = "ghcr.io/<owner>/<image>:<tag>"
+registry_credentials_secret_arn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:platform-eng/registry-pull-AbCdEf"
+```
+
+For GHCR the token needs only the `read:packages` scope and its owner must be
+able to read the package. Rotating the credential is a secret-value update;
+running tasks are unaffected and new tasks pick it up at launch. The
+credential reference lives in the container definition, so deployment
+pipelines that register a new task definition from the current one keep it.
 
 After first creation, CI/CD owns which image runs (the template ignores
 drift on the service's task definition), so `container_image` affects only
