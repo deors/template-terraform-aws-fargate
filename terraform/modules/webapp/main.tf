@@ -359,6 +359,10 @@ resource "aws_lb_listener" "https" {
     # CodeDeploy shifts traffic by modifying listener rules; ignore drift
     ignore_changes = [default_action]
   }
+
+  # CodeDeploy points the listener at the green target group after a
+  # deployment; the explicit edge keeps destroy order listener -> target groups
+  depends_on = [aws_lb_target_group.blue, aws_lb_target_group.green]
 }
 
 # HTTP listener: redirect to HTTPS when cert is present, forward directly otherwise (dev HTTP-only)
@@ -393,6 +397,8 @@ resource "aws_lb_listener" "http" {
   lifecycle {
     ignore_changes = [default_action]
   }
+
+  depends_on = [aws_lb_target_group.blue, aws_lb_target_group.green]
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
