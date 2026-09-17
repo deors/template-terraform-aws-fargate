@@ -7,11 +7,16 @@ locals {
     platform    = "platform-engineering"
   })
 
-  # Resolve AZs: use provided list or fall back to data source
-  azs = length(var.availability_zones) > 0 ? var.availability_zones : data.aws_availability_zones.available.names
-
   # Number of subnets = number of provided CIDRs (must match across private/public)
   subnet_count = length(var.private_subnet_cidrs)
+
+  # AZs for subnet placement: the caller's list, or the first subnet_count
+  # region AZs sorted by name so the set stays stable when AWS adds a zone
+  azs = length(var.availability_zones) > 0 ? var.availability_zones : slice(
+    sort(data.aws_availability_zones.available.names),
+    0,
+    min(local.subnet_count, length(data.aws_availability_zones.available.names))
+  )
 
   # ACM certificate automation: active only when main_domain is provided
   create_certificate = var.main_domain != ""
@@ -23,6 +28,7 @@ locals {
 }
 
 data "aws_availability_zones" "available" {
+  #checkov:skip=CKV_AWS_394: region-agnostic template — zone identity cannot be pinned; the result set is bounded to the subnet count via sort+slice
   state = "available"
 }
 

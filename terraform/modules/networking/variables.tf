@@ -37,7 +37,7 @@ variable "public_subnet_cidrs" {
 }
 
 variable "availability_zones" {
-  description = "List of AZ names to spread subnets across. Defaults to first 2 AZs in the current region."
+  description = "List of AZ names to spread subnets across. Defaults to the first N available AZs of the current region sorted by name, where N is the number of subnet CIDRs."
   type        = list(string)
   default     = []
 }
