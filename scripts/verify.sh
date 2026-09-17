@@ -235,10 +235,33 @@ if [[ "$SVC_STATUS" == "ACTIVE" ]]; then
   # ALB health checks, grace period). Bounded wait: 15s × 40 attempts, max 10
   # minutes. On timeout, fall through — the assertions below then report the
   # actual counts and the rest of the script still runs.
-  echo "  … waiting for first-deploy convergence (ecs wait services-stable, max 10m)"
-  if ! aws ecs wait services-stable --region "$AWS_REGION" \
-      --cluster "$CLUSTER" --services "$SERVICE" 2>/dev/null; then
-    echo "  ! services-stable wait expired — asserting on current counts"
+  CONTROLLER=$(echo "$SVC_JSON" | jq -r '.deploymentController.type // "ECS"')
+  if [[ "$CONTROLLER" == "CODE_DEPLOY" ]]; then
+    # CodeDeploy-controlled services report task sets, not deployments, and
+    # the services-stable waiter evaluates length(deployments) — a JMESPath
+    # type error on null, so it exits at once instead of polling. Poll the
+    # primary task set instead.
+    echo "  … waiting for first-deploy convergence (primary task set STEADY_STATE, max 10m)"
+    STABLE=false
+    for ((ATTEMPT = 1; ATTEMPT <= 40; ATTEMPT++)); do
+      SVC_JSON=$(aws ecs describe-services --region "$AWS_REGION" --cluster "$CLUSTER" --services "$SERVICE" --query 'services[0]' --output json 2>/dev/null || echo '{}')
+      STABILITY=$(echo "$SVC_JSON" | jq -r '[.taskSets[]? | select(.status=="PRIMARY")][0].stabilityStatus // "missing"')
+      RUNNING=$(echo "$SVC_JSON" | jq -r '.runningCount // 0')
+      DESIRED=$(echo "$SVC_JSON" | jq -r '.desiredCount // 0')
+      if [[ "$STABILITY" == "STEADY_STATE" && "$RUNNING" =~ ^[0-9]+$ && "$RUNNING" -ge "$DESIRED" ]]; then
+        STABLE=true; break
+      fi
+      [[ "$ATTEMPT" -lt 40 ]] && sleep 15
+    done
+    if [[ "$STABLE" != true ]]; then
+      echo "  ! primary task set not steady after 10m (stability=$STABILITY, running=$RUNNING/$DESIRED) — asserting on current counts"
+    fi
+  else
+    echo "  … waiting for first-deploy convergence (ecs wait services-stable, max 10m)"
+    if ! WAIT_ERR=$(aws ecs wait services-stable --region "$AWS_REGION" \
+        --cluster "$CLUSTER" --services "$SERVICE" 2>&1 >/dev/null); then
+      echo "  ! services-stable wait exited: ${WAIT_ERR:-no reason given} — asserting on current counts"
+    fi
   fi
   SVC_JSON=$(aws ecs describe-services --region "$AWS_REGION" --cluster "$CLUSTER" --services "$SERVICE" --query 'services[0]' --output json 2>/dev/null || echo '{}')
   RUNNING=$(echo "$SVC_JSON" | jq -r '.runningCount // 0')
