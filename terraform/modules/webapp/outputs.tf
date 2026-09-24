@@ -57,3 +57,18 @@ output "codedeploy_deployment_group" {
   description = "Name of the CodeDeploy deployment group (empty when blue/green is disabled)"
   value       = var.enable_blue_green ? aws_codedeploy_deployment_group.this[0].deployment_group_name : ""
 }
+
+output "auth_user_pool_id" {
+  description = "Cognito user pool ID backing ALB authentication (empty when disabled)"
+  value       = try(aws_cognito_user_pool.this[0].id, "")
+}
+
+output "auth_sign_in_domain" {
+  description = "Hostname of the Cognito hosted sign-in page (empty when disabled)"
+  value       = try("${aws_cognito_user_pool_domain.this[0].domain}.auth.${data.aws_region.current.name}.amazoncognito.com", "")
+}
+
+output "auth_default_user_secret_arn" {
+  description = "Secrets Manager secret holding the test user's credentials (empty when no test user)"
+  value       = try(aws_secretsmanager_secret.default_user[0].arn, "")
+}

@@ -182,19 +182,19 @@ case "$ENVIRONMENT" in
     EXPECTED_MIN_TASKS=1; EXPECTED_DESIRED=1
     EXPECTED_AUTOSCALING=false; EXPECTED_BLUE_GREEN=false
     EXPECTED_LOG_RETENTION=30; EXPECTED_ALB_SCHEME="internet-facing"
-    EXPECTED_XRAY_RATE=1.0 ;;
+    EXPECTED_XRAY_RATE=1.0; EXPECTED_AUTH_USER="developer" ;;
   staging)
     EXPECTED_CPU=512; EXPECTED_MEMORY=1024
     EXPECTED_MIN_TASKS=1; EXPECTED_DESIRED=1
     EXPECTED_AUTOSCALING=true; EXPECTED_BLUE_GREEN=true
     EXPECTED_LOG_RETENTION=60; EXPECTED_ALB_SCHEME="internal"
-    EXPECTED_XRAY_RATE=0.10 ;;
+    EXPECTED_XRAY_RATE=0.10; EXPECTED_AUTH_USER="reviewer" ;;
   prod)
     EXPECTED_CPU=1024; EXPECTED_MEMORY=2048
     EXPECTED_MIN_TASKS=3; EXPECTED_DESIRED=3
     EXPECTED_AUTOSCALING=true; EXPECTED_BLUE_GREEN=true
     EXPECTED_LOG_RETENTION=90; EXPECTED_ALB_SCHEME="internal"
-    EXPECTED_XRAY_RATE=0.01 ;;
+    EXPECTED_XRAY_RATE=0.01; EXPECTED_AUTH_USER="demo" ;;
   *)
     # Unreachable — ENVIRONMENT is validated above. Kept so that adding a value
     # to VALID_ENVIRONMENTS without adding its expectations here fails loudly,
@@ -324,6 +324,36 @@ if [[ -n "$MAIN_DOMAIN" ]]; then
       --query 'Listeners[?Port==`443`].SslPolicy | [0]' \
       --output text 2>/dev/null || echo "missing")
     assert_one_of "HTTPS listener TLS policy" "${HTTPS_SSL_POLICY:-missing}" "${APPROVED_SSL_POLICIES[@]}"
+  fi
+  echo "::endgroup::"
+fi
+
+# ── Authentication ────────────────────────────────────────────────────────────
+# The authenticate action lives on the HTTPS listener, so an HTTP-only
+# deployment skips this group like the TLS one.
+if [[ -n "$MAIN_DOMAIN" ]]; then
+  echo "::group::Authentication"
+  ALB_ARN_FOR_AUTH=$(echo "$ALB_JSON" | jq -r '.LoadBalancerArn // ""')
+  AUTH_JSON=$(aws elbv2 describe-listeners --region "$AWS_REGION" \
+    --load-balancer-arn "$ALB_ARN_FOR_AUTH" \
+    --query 'Listeners[?Port==`443`] | [0].DefaultActions[?Type==`authenticate-cognito`] | [0].AuthenticateCognitoConfig' \
+    --output json 2>/dev/null || echo 'null')
+  AUTH_ACTION="missing"
+  [[ -n "$AUTH_JSON" && "$AUTH_JSON" != "null" ]] && AUTH_ACTION="authenticate-cognito"
+  assert_eq "HTTPS listener authentication" "$AUTH_ACTION" "authenticate-cognito"
+  if [[ "$AUTH_ACTION" == "authenticate-cognito" ]]; then
+    ON_UNAUTH=$(echo "$AUTH_JSON" | jq -r '.OnUnauthenticatedRequest // "missing"')
+    assert_eq "Unauthenticated requests" "$ON_UNAUTH" "authenticate"
+    POOL_ID=$(echo "$AUTH_JSON" | jq -r '.UserPoolArn // ""' | awk -F/ '{print $NF}')
+    SELF_SIGNUP_OFF=$(aws cognito-idp describe-user-pool --region "$AWS_REGION" --user-pool-id "$POOL_ID" \
+      --query 'UserPool.AdminCreateUserConfig.AllowAdminCreateUserOnly' --output text 2>/dev/null || echo "missing")
+    assert_eq "Self sign-up disabled" "$SELF_SIGNUP_OFF" "True"
+    USER_STATUS=$(aws cognito-idp admin-get-user --region "$AWS_REGION" --user-pool-id "$POOL_ID" \
+      --username "$EXPECTED_AUTH_USER" --query 'UserStatus' --output text 2>/dev/null || echo "missing")
+    assert_eq "Default user ${EXPECTED_AUTH_USER}" "$USER_STATUS" "CONFIRMED"
+    SECRET_NAME=$(aws secretsmanager describe-secret --region "$AWS_REGION" \
+      --secret-id "auth/${PREFIX}/${EXPECTED_AUTH_USER}" --query 'Name' --output text 2>/dev/null || echo "missing")
+    assert_eq "Test user credentials secret" "$SECRET_NAME" "auth/${PREFIX}/${EXPECTED_AUTH_USER}"
   fi
   echo "::endgroup::"
 fi
@@ -570,8 +600,16 @@ fi
 if [[ "$EXPECTED_ALB_SCHEME" == "internet-facing" && -n "$MAIN_DOMAIN" ]]; then
   echo "::group::Public DNS"
   PUBLIC_FQDN="${APP_NAME}.${ENVIRONMENT}.${MAIN_DOMAIN}"
-  HTTP_CODE=$(curl -s --max-time 10 -o /dev/null -w "%{http_code}" "https://${PUBLIC_FQDN}/" 2>/dev/null)
-  assert_eq "HTTPS ${PUBLIC_FQDN}" "${HTTP_CODE:-000}" "200"
+  # Every request is authenticated at the ALB: an anonymous probe must be
+  # redirected to the sign-in page, not served.
+  PROBE=$(curl -s --max-time 10 -o /dev/null -w "%{http_code} %{redirect_url}" "https://${PUBLIC_FQDN}/" 2>/dev/null)
+  HTTP_CODE=${PROBE%% *}
+  REDIRECT_HOST=$(echo "${PROBE#* }" | awk -F/ '{print $3}')
+  assert_eq "HTTPS ${PUBLIC_FQDN}" "${HTTP_CODE:-000}" "302"
+  case "$REDIRECT_HOST" in
+    *.amazoncognito.com) pass "Redirect to sign-in page = ${REDIRECT_HOST}" ;;
+    *) fail "Redirect to sign-in page: expected *.amazoncognito.com, got '${REDIRECT_HOST:-none}'" ;;
+  esac
   echo "::endgroup::"
 fi
 

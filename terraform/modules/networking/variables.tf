@@ -66,6 +66,12 @@ variable "app_port" {
   default     = 8080
 }
 
+variable "alb_egress_https" {
+  description = "Allow the ALB outbound HTTPS to the internet (required for the ALB authenticate action to reach the identity provider)"
+  type        = bool
+  default     = false
+}
+
 variable "main_domain" {
   description = "Root domain managed in Route 53 (e.g. \"example.com\"). When set, a DNS-validated ACM certificate is issued for <name>.<environment>.<main_domain> using the matching public hosted zone."
   type        = string

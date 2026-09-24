@@ -201,6 +201,18 @@ resource "aws_security_group" "alb" {
     cidr_blocks = [var.vpc_cidr]
   }
 
+  # Token and user-info exchange with the identity provider
+  dynamic "egress" {
+    for_each = var.alb_egress_https ? [1] : []
+    content {
+      description = "HTTPS to the identity provider"
+      from_port   = 443
+      to_port     = 443
+      protocol    = "tcp"
+      cidr_blocks = ["0.0.0.0/0"]
+    }
+  }
+
   tags = merge(local.base_tags, { Name = "alb-sg-${local.prefix}" })
 }
 

@@ -32,3 +32,18 @@ output "codedeploy_deployment_group" {
   description = "CodeDeploy deployment group name"
   value       = module.webapp.codedeploy_deployment_group
 }
+
+output "auth_user_pool_id" {
+  description = "Cognito user pool ID backing ALB authentication (empty when disabled)"
+  value       = module.webapp.auth_user_pool_id
+}
+
+output "auth_sign_in_domain" {
+  description = "Hostname of the Cognito hosted sign-in page (empty when disabled)"
+  value       = module.webapp.auth_sign_in_domain
+}
+
+output "auth_default_user_secret_arn" {
+  description = "Secrets Manager secret holding the test user's credentials (empty when no test user)"
+  value       = module.webapp.auth_default_user_secret_arn
+}
