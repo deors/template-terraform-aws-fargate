@@ -224,7 +224,7 @@ everywhere — TLS policy, tagging, encryption — are documented once under
 ### Identity & Access
 
 - **Task Execution Role**: `AmazonECSTaskExecutionRolePolicy` + scoped Secrets Manager access for container secret injection
-- **Task Role**: Least-privilege — Secrets Manager read (`secretsmanager:GetSecretValue`) scoped to `{prefix}/*`, X-Ray write (when enabled)
+- **Task Role**: Least-privilege — Secrets Manager read (`secretsmanager:GetSecretValue`) scoped to the `<app_name>-<environment>/*` prefix, X-Ray write (when enabled)
 - **Image pull**: By the task execution role — ECR through `AmazonECSTaskExecutionRolePolicy`; other private registries through `repositoryCredentials` pointing at a Secrets Manager secret the role may read (never in the container environment)
 - **TLS**: TLS 1.3 only in all environments (`ELBSecurityPolicy-TLS13-1-3-2021-06`), enforced by a validation block on the module variable so it cannot be weakened per environment; a valid ACM certificate ARN is required
 - **Authentication**: every request is authenticated at the ALB against a Cognito user pool owned by the environment (see [Authentication](#authentication)); self sign-up is disabled, real users are invited by an administrator, and the only user the template creates has a generated password kept in Secrets Manager outside the task role's reach
@@ -281,15 +281,31 @@ pipeline.
 
 ### Secrets Manager Integration
 
-Reference AWS Secrets Manager secrets in the task definition (injected at task launch, never in plaintext):
+Secrets Manager has no per-application container: the layout is a **naming
+prefix per environment**, `<app_name>-<environment>/`, enforced by IAM. The
+application team creates secrets under that prefix; the template never creates
+application secrets, it only wires access:
+
+- The **task role** may read any secret under `<app_name>-<environment>/*`, so
+  the running application can fetch secrets at runtime without a Terraform
+  change.
+- Secrets listed in `secrets_manager_arns` are additionally **injected at task
+  launch** as container secrets (never in the task definition plaintext); the
+  execution role is granted exactly those ARNs.
 
 ```hcl
-# In the webapp module call:
+# In the webapp module call (environment dev of app myapp):
 secrets_manager_arns = {
-  DB_PASSWORD = "arn:aws:secretsmanager:us-east-1:123456789012:secret:myapp/db-password-AbCdEf"
-  API_KEY     = "arn:aws:secretsmanager:us-east-1:123456789012:secret:myapp/api-key-XyZwVu"
+  DB_PASSWORD = "arn:aws:secretsmanager:eu-west-1:123456789012:secret:myapp-dev/db-password-AbCdEf"
+  API_KEY     = "arn:aws:secretsmanager:eu-west-1:123456789012:secret:myapp-dev/api-key-XyZwVu"
 }
 ```
+
+Outside the prefix, and deliberately so: the registry credentials secret (see
+[Container Registry](#container-registry)), owned by the platform, and the
+test user's credentials under `auth/<app_name>-<environment>/<user>` (see
+[Authentication](#authentication)), which the application must not be able to
+read.
 
 ### Container Registry
 
