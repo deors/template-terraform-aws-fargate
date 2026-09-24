@@ -49,6 +49,9 @@ module "networking" {
   # ACM certificate: issued for <app_name>.staging.<main_domain> via DNS validation
   main_domain = var.main_domain
 
+  # The ALB exchanges authentication tokens with the identity provider
+  alb_egress_https = var.main_domain != ""
+
   # Staging's ALB is internal: publish the FQDN in a VPC-private hosted zone
   # (split-horizon), never in public DNS — a public record answering with
   # RFC1918 addresses leaks internal topology and is dropped by resolvers with
@@ -102,6 +105,12 @@ module "webapp" {
   codedeploy_deployment_config = "CodeDeployDefault.ECSLinear10PercentEvery1Minutes"
 
   app_settings = var.app_settings
+
+  # Authentication at the ALB, active whenever HTTPS is (requires main_domain);
+  # one non-interactive test user per environment, password in Secrets Manager
+  enable_auth       = var.main_domain != ""
+  app_fqdn          = module.networking.cert_domain_name
+  auth_default_user = "reviewer"
 
   log_group_name            = module.monitoring.log_group_name
   enable_xray               = true

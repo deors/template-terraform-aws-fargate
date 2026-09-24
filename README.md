@@ -151,7 +151,10 @@ run.
 Grouped assertions: ECS cluster (status, Container Insights), ECS service
 (status, running/desired counts, launch type), task definition (CPU, memory,
 network mode, roles), ALB (state, scheme, type) and its HTTPS listener's TLS
-policy against the TLS 1.3-only allow-list, target health, autoscaling
+policy against the TLS 1.3-only allow-list, authentication (the
+`authenticate-cognito` action on the HTTPS listener, self sign-up disabled,
+the environment's test user confirmed and its credentials secret present),
+target health, autoscaling
 (staging/prod), CloudWatch logs including per-environment retention
 (30/60/90 days), CloudWatch alarms (CPU, memory, task count — existence, not
 state, since fresh deployments sit in `INSUFFICIENT_DATA`), X-Ray (sampling
@@ -162,10 +165,12 @@ asserted in dev; in staging/prod the private zone and record are asserted
 present and the public record asserted **absent**), and the public endpoint.
 
 All but the last are control-plane assertions. The **public endpoint** check
-is the one that sends real traffic: an HTTPS `GET` against
-`<app>.<env>.<domain>` expecting `200`. Because `curl` validates the
-certificate chain by default, this doubles as proof the ACM certificate is
-serving correctly — a TLS failure surfaces as `000`, not a status code.
+is the one that sends real traffic: an anonymous HTTPS `GET` against
+`<app>.<env>.<domain>` expecting a `302` to the Cognito sign-in page — proof
+that the ALB is serving and that authentication is enforced on it. Because
+`curl` validates the certificate chain by default, this doubles as proof the
+ACM certificate is serving correctly — a TLS failure surfaces as `000`, not a
+status code.
 
 That probe runs for **dev only**, whose ALB is internet-facing for exactly
 this purpose. Staging and prod use an internal ALB, so a request from a
@@ -201,7 +206,8 @@ everywhere — TLS policy, tagging, encryption — are documented once under
 | **X-Ray sampling** | 100% — full capture while developing | 10% | 1% — low overhead at production volume |
 | **Deployment** | Rolling update, no CodeDeploy | CodeDeploy blue/green, linear 10%, auto-rollback | CodeDeploy blue/green, linear 10%, auto-rollback |
 | **App DNS record** | Public zone — resolvable from anywhere | VPC-private zone — resolves only inside the VPC | VPC-private zone — resolves only inside the VPC |
-| **Post-apply probe** | HTTPS `GET` on the app FQDN, expects `200` | Control plane only | Control plane only |
+| **Test user** | `developer` | `reviewer` | `demo` |
+| **Post-apply probe** | Anonymous HTTPS `GET` on the app FQDN, expects `302` to sign-in | Control plane only | Control plane only |
 | **Checkov baseline** | `.checkov.nonprod.yaml` (relaxed) | `.checkov.nonprod.yaml` (relaxed) | `.checkov.yaml` (strict) |
 
 ---
@@ -221,6 +227,7 @@ everywhere — TLS policy, tagging, encryption — are documented once under
 - **Task Role**: Least-privilege — Secrets Manager read (`secretsmanager:GetSecretValue`) scoped to `{prefix}/*`, X-Ray write (when enabled)
 - **Image pull**: By the task execution role — ECR through `AmazonECSTaskExecutionRolePolicy`; other private registries through `repositoryCredentials` pointing at a Secrets Manager secret the role may read (never in the container environment)
 - **TLS**: TLS 1.3 only in all environments (`ELBSecurityPolicy-TLS13-1-3-2021-06`), enforced by a validation block on the module variable so it cannot be weakened per environment; a valid ACM certificate ARN is required
+- **Authentication**: every request is authenticated at the ALB against a Cognito user pool owned by the environment (see [Authentication](#authentication)); self sign-up is disabled, real users are invited by an administrator, and the only user the template creates has a generated password kept in Secrets Manager outside the task role's reach
 
 ### Compliance
 
@@ -364,6 +371,84 @@ main_domain = "example.com"
 ```
 
 The `tofu apply` blocks until ACM reports the certificate as `ISSUED` (typically under a minute via Route 53 DNS validation). The public hosted zone for `main_domain` must exist in the same AWS account.
+
+---
+
+### Authentication
+
+Every request to the application is authenticated **at the ALB**, before it
+reaches a container. The HTTPS listener carries an `authenticate-cognito`
+action ahead of the forward action: anonymous requests are redirected to a
+Cognito hosted sign-in page, and authenticated ones are forwarded with the
+user's claims in the `x-amzn-oidc-*` headers. The application needs no
+authentication code of its own and keeps the [container contract](#container-contract)
+unchanged.
+
+Each environment owns its identity store, created by the webapp module:
+
+- a **Cognito user pool** (`auth-<app_name>-<environment>`): self sign-up
+  disabled, sign-in by username or email, 12-character password policy with
+  all character classes, recovery through a verified email;
+- a **hosted sign-in domain** (`<app_name>-<environment>-<hash>.auth.<region>.amazoncognito.com`);
+- an **app client** for the ALB — code grant, client secret, callback on the
+  ALB's fixed `https://<fqdn>/oauth2/idpresponse` path.
+
+Two kinds of users share the pool:
+
+**Test user (created by the template).** One per environment, named in
+`environments/<env>/main.tf` (`auth_default_user`, see
+[Environment-Specific Baselines](#environment-specific-baselines)). Its
+password is generated at provisioning, set as permanent so no first-login step
+is needed, and stored in Secrets Manager under `auth/<app_name>-<environment>/<user>`
+— a prefix the application's task role cannot read. It exists so that a fresh
+environment can be opened in a browser and exercised by non-interactive
+end-to-end tests. Retrieve it with:
+
+```bash
+aws secretsmanager get-secret-value --secret-id auth/<app_name>-<environment>/<user> --query SecretString --output text
+```
+
+Set `auth_default_user = ""` to create no test user. Note that the ALB accepts
+only its own session cookie, issued at the end of the hosted sign-in flow: an
+automated client has to drive that flow (follow the redirect, post the
+credentials to the sign-in form, follow the callback) rather than present a
+Cognito token.
+
+**Real users (invited by an administrator).** Created with an email address;
+Cognito emails a temporary password and forces a change at first sign-in.
+Nothing about them touches Terraform:
+
+```bash
+aws cognito-idp admin-create-user --user-pool-id <pool_id> --username <user> \
+  --user-attributes Name=email,Value=<email> Name=email_verified,Value=true \
+  --desired-delivery-mediums EMAIL
+```
+
+Cognito's default email sender is capped at fifty messages a day, enough for a
+workshop; a production pool would be pointed at Amazon SES.
+
+Authentication is tied to HTTPS: the `authenticate-cognito` action exists only
+on HTTPS listeners, so it is active exactly when `main_domain` is set. An
+HTTP-only deployment has no authentication and the module refuses
+`enable_auth = true` without `enable_https`. The ALB security group gains an
+outbound HTTPS rule (`alb_egress_https`) so the load balancer can exchange
+tokens with Cognito; internal ALBs do this through the NAT gateway.
+
+Consequences worth knowing:
+
+- Health checks are unaffected — the ALB probes targets directly, not through
+  the listener.
+- Any external smoke test that expects `200` from the app FQDN now receives a
+  `302` to the sign-in page. The verification script asserts exactly that.
+- The ALB session cookie lasts `auth_session_timeout` seconds (default one
+  hour); users sign in again when it expires.
+- Federating a corporate identity provider is a change to the user pool
+  (SAML/OIDC identity provider + `supported_identity_providers` on the app
+  client), not to the listener.
+
+Module inputs: `enable_auth`, `app_fqdn`, `auth_default_user`,
+`auth_session_timeout`. Outputs: `auth_user_pool_id`, `auth_sign_in_domain`,
+`auth_default_user_secret_arn`.
 
 ---
 

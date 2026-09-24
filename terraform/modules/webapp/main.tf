@@ -15,6 +15,9 @@ locals {
   # CodeDeploy requires two target groups; rolling uses one
   create_green_tg = var.enable_blue_green
 
+  # ALB authentication actions exist only on HTTPS listeners
+  create_auth = var.enable_auth && local.create_https_listener
+
   # Tag from the image reference: after "@" for digest pins; otherwise only the
   # last path segment may carry a tag (a ":" in an earlier segment is a
   # registry port, e.g. "registry:5000/img").
@@ -338,6 +341,139 @@ resource "aws_lb_target_group" "green" {
   tags = local.base_tags
 }
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Authentication — Cognito user pool used by the ALB authenticate action
+# ──────────────────────────────────────────────────────────────────────────────
+
+resource "aws_cognito_user_pool" "this" {
+  count = local.create_auth ? 1 : 0
+
+  name                = "auth-${local.prefix}"
+  deletion_protection = "INACTIVE"
+  mfa_configuration   = "OFF"
+
+  # Users are created by the template or an administrator, never by self sign-up
+  admin_create_user_config {
+    allow_admin_create_user_only = true
+  }
+
+  # Sign in with username or email; invited users receive their temporary
+  # password by email
+  alias_attributes         = ["email"]
+  auto_verified_attributes = ["email"]
+
+  username_configuration {
+    case_sensitive = false
+  }
+
+  # Optional so the test user (no mailbox) can exist alongside invited users
+  schema {
+    name                = "email"
+    attribute_data_type = "String"
+    required            = false
+    mutable             = true
+
+    string_attribute_constraints {
+      min_length = 0
+      max_length = 2048
+    }
+  }
+
+  account_recovery_setting {
+    recovery_mechanism {
+      name     = "verified_email"
+      priority = 1
+    }
+  }
+
+  password_policy {
+    minimum_length                   = 12
+    require_lowercase                = true
+    require_uppercase                = true
+    require_numbers                  = true
+    require_symbols                  = true
+    temporary_password_validity_days = 7
+  }
+
+  lifecycle {
+    precondition {
+      condition     = local.create_https_listener && var.app_fqdn != ""
+      error_message = "enable_auth requires enable_https = true and a non-empty app_fqdn: the ALB authenticate action exists only on HTTPS listeners and needs the app hostname for the callback URL."
+    }
+  }
+
+  tags = local.base_tags
+}
+
+# Hosted sign-in page; the prefix must be unique per region
+resource "aws_cognito_user_pool_domain" "this" {
+  count = local.create_auth ? 1 : 0
+
+  domain       = "${local.prefix}-${substr(md5(data.aws_caller_identity.current.account_id), 0, 8)}"
+  user_pool_id = aws_cognito_user_pool.this[0].id
+}
+
+# App client for the ALB: code grant with a client secret, callback on the
+# ALB's fixed /oauth2/idpresponse path
+resource "aws_cognito_user_pool_client" "alb" {
+  count = local.create_auth ? 1 : 0
+
+  name         = "alb-${local.prefix}"
+  user_pool_id = aws_cognito_user_pool.this[0].id
+
+  generate_secret                      = true
+  allowed_oauth_flows_user_pool_client = true
+  allowed_oauth_flows                  = ["code"]
+  allowed_oauth_scopes                 = ["openid", "email", "profile"]
+  supported_identity_providers         = ["COGNITO"]
+  callback_urls                        = ["https://${lower(var.app_fqdn)}/oauth2/idpresponse"]
+  logout_urls                          = ["https://${lower(var.app_fqdn)}"]
+  prevent_user_existence_errors        = "ENABLED"
+}
+
+# Non-interactive test user: generated permanent password, readable only from
+# Secrets Manager (outside the prefix the task role can read)
+resource "random_password" "default_user" {
+  count = local.create_auth && var.auth_default_user != "" ? 1 : 0
+
+  length           = 24
+  min_lower        = 1
+  min_upper        = 1
+  min_numeric      = 1
+  min_special      = 1
+  override_special = "!#$%&*()-_=+[]{}<>:?"
+}
+
+resource "aws_cognito_user" "default" {
+  count = local.create_auth && var.auth_default_user != "" ? 1 : 0
+
+  user_pool_id = aws_cognito_user_pool.this[0].id
+  username     = var.auth_default_user
+  password     = random_password.default_user[0].result
+  enabled      = true
+}
+
+resource "aws_secretsmanager_secret" "default_user" {
+  # checkov:skip=CKV_AWS_149: KMS CMK for secret encryption is out of scope for this workshop template; AWS-managed key is used.
+  count = local.create_auth && var.auth_default_user != "" ? 1 : 0
+
+  name                    = "auth/${local.prefix}/${var.auth_default_user}"
+  description             = "Sign-in credentials of the ${var.auth_default_user} test user for ${local.prefix}"
+  recovery_window_in_days = 0
+
+  tags = local.base_tags
+}
+
+resource "aws_secretsmanager_secret_version" "default_user" {
+  count = local.create_auth && var.auth_default_user != "" ? 1 : 0
+
+  secret_id = aws_secretsmanager_secret.default_user[0].id
+  secret_string = jsonencode({
+    username = var.auth_default_user
+    password = random_password.default_user[0].result
+  })
+}
+
 # HTTPS listener (when certificate_arn is provided)
 resource "aws_lb_listener" "https" {
   count = local.create_https_listener ? 1 : 0
@@ -348,8 +484,26 @@ resource "aws_lb_listener" "https" {
   ssl_policy        = var.ssl_policy
   certificate_arn   = var.certificate_arn
 
+  dynamic "default_action" {
+    for_each = local.create_auth ? [1] : []
+    content {
+      type  = "authenticate-cognito"
+      order = 1
+
+      authenticate_cognito {
+        user_pool_arn              = aws_cognito_user_pool.this[0].arn
+        user_pool_client_id        = aws_cognito_user_pool_client.alb[0].id
+        user_pool_domain           = aws_cognito_user_pool_domain.this[0].domain
+        scope                      = "openid"
+        session_timeout            = var.auth_session_timeout
+        on_unauthenticated_request = "authenticate"
+      }
+    }
+  }
+
   default_action {
     type             = "forward"
+    order            = local.create_auth ? 2 : null
     target_group_arn = aws_lb_target_group.blue.arn
   }
 

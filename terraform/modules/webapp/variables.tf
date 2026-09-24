@@ -126,6 +126,30 @@ variable "health_check_grace_period_seconds" {
 
 # ── TLS / ALB ─────────────────────────────────────────────────────────────
 
+variable "enable_auth" {
+  description = "Authenticate every request at the ALB with a Cognito user pool created by this module. Requires enable_https and app_fqdn."
+  type        = bool
+  default     = false
+}
+
+variable "app_fqdn" {
+  description = "Fully qualified hostname of the application (callback URL for authentication). Required when enable_auth is true."
+  type        = string
+  default     = ""
+}
+
+variable "auth_default_user" {
+  description = "Username of the non-interactive test user created at provisioning with a generated password stored in Secrets Manager; empty creates none"
+  type        = string
+  default     = ""
+}
+
+variable "auth_session_timeout" {
+  description = "ALB authentication session lifetime in seconds"
+  type        = number
+  default     = 3600
+}
+
 variable "enable_https" {
   description = "Whether to create the HTTPS listener on port 443. Must be a plan-time-known value (not derived from a computed certificate ARN). Set to var.main_domain != \"\" in the environment config."
   type        = bool

@@ -51,6 +51,9 @@ module "networking" {
   # ACM certificate: issued for <app_name>.dev.<main_domain> via DNS validation
   main_domain = var.main_domain
 
+  # The ALB exchanges authentication tokens with the identity provider
+  alb_egress_https = var.main_domain != ""
+
   # Dev's ALB is internet-facing, so its DNS record belongs in the public zone
   # (created below). Staging and prod set this true and publish in a
   # VPC-private zone instead — their internal ALBs must not appear in public DNS.
@@ -100,6 +103,12 @@ module "webapp" {
   enable_blue_green = false
 
   app_settings = var.app_settings
+
+  # Authentication at the ALB, active whenever HTTPS is (requires main_domain);
+  # one non-interactive test user per environment, password in Secrets Manager
+  enable_auth       = var.main_domain != ""
+  app_fqdn          = module.networking.cert_domain_name
+  auth_default_user = "developer"
 
   # Observability
   log_group_name            = module.monitoring.log_group_name
