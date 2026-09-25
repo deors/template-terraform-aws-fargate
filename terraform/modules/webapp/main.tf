@@ -678,6 +678,23 @@ resource "aws_iam_role_policy_attachment" "codedeploy" {
   policy_arn = "arn:aws:iam::aws:policy/AWSCodeDeployRoleForECS"
 }
 
+# ELB requires this on the principal that modifies a listener carrying an
+# authenticate-cognito action; the managed policy above does not include it
+resource "aws_iam_role_policy" "codedeploy_auth" {
+  count = var.enable_blue_green && local.create_auth ? 1 : 0
+  name  = "cognito-listener-auth"
+  role  = aws_iam_role.codedeploy[0].id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = "cognito-idp:DescribeUserPoolClient"
+      Resource = aws_cognito_user_pool.this[0].arn
+    }]
+  })
+}
+
 resource "aws_codedeploy_app" "this" {
   count            = var.enable_blue_green ? 1 : 0
   name             = "cd-${local.prefix}"
