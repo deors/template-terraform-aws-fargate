@@ -454,6 +454,11 @@ Consequences worth knowing:
 
 - Health checks are unaffected — the ALB probes targets directly, not through
   the listener.
+- CodeDeploy blue/green deployments modify the HTTPS listener, and Elastic
+  Load Balancing refuses that on a listener carrying an `authenticate-cognito`
+  action unless the caller holds `cognito-idp:DescribeUserPoolClient`. The
+  CodeDeploy service role gets an inline policy granting exactly that, scoped
+  to the environment's user pool.
 - Any external smoke test that expects `200` from the app FQDN now receives a
   `302` to the sign-in page. The verification script asserts exactly that.
 - The ALB session cookie lasts `auth_session_timeout` seconds (default one
