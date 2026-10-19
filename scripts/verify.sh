@@ -362,8 +362,20 @@ fi
 echo "::group::ALB Target Group"
 ALB_ARN=$(echo "$ALB_JSON" | jq -r '.LoadBalancerArn // ""')
 if [[ -n "$ALB_ARN" && "$ALB_ARN" != "null" ]]; then
-  TG_JSON=$(aws elbv2 describe-target-groups --region "$AWS_REGION" --load-balancer-arn "$ALB_ARN" --query 'TargetGroups[0]' --output json 2>/dev/null || echo '{}')
-  TG_ARN=$(echo "$TG_JSON" | jq -r '.TargetGroupArn // ""')
+  # The live target group is the one the listeners forward to (blue/green
+  # swaps the two on every release); fall back to the ALB's first group only
+  # when no listener forwards yet.
+  LISTENERS_JSON=$(aws elbv2 describe-listeners --region "$AWS_REGION" --load-balancer-arn "$ALB_ARN" --query 'Listeners' --output json 2>/dev/null || echo '[]')
+  TG_ARN=$(echo "$LISTENERS_JSON" | jq -r '
+    [ sort_by(if .Port == 443 then 0 else 1 end)[]
+      | .DefaultActions[] | select(.Type == "forward")
+      | (.ForwardConfig.TargetGroups // [{TargetGroupArn: .TargetGroupArn, Weight: 1}])[]
+      | select((.Weight // 1) > 0) ]
+    | sort_by(-(.Weight // 1)) | .[0].TargetGroupArn // ""')
+  if [[ -z "$TG_ARN" || "$TG_ARN" == "null" ]]; then
+    TG_ARN=$(aws elbv2 describe-target-groups --region "$AWS_REGION" --load-balancer-arn "$ALB_ARN" --query 'TargetGroups[0].TargetGroupArn' --output json 2>/dev/null || echo null)
+    TG_ARN=$(echo "$TG_ARN" | jq -r '. // ""')
+  fi
   if [[ -n "$TG_ARN" && "$TG_ARN" != "null" ]]; then
     # Target registration can lag service stability; bounded retry, then
     # assert on the final value.
