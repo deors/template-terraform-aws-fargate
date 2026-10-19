@@ -154,7 +154,7 @@ network mode, roles), ALB (state, scheme, type) and its HTTPS listener's TLS
 policy against the TLS 1.3-only allow-list, authentication (the
 `authenticate-cognito` action on the HTTPS listener, self sign-up disabled,
 the environment's test user confirmed and its credentials secret present),
-target health, autoscaling
+target health on the group the listeners forward to, autoscaling
 (staging/prod), CloudWatch logs including per-environment retention
 (30/60/90 days), CloudWatch alarms (CPU, memory, task count — existence, not
 state, since fresh deployments sit in `INSUFFICIENT_DATA`), X-Ray (sampling
