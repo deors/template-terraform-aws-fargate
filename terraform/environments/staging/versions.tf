@@ -18,7 +18,7 @@ provider "aws" {
     tags = {
       application = var.app_name
       environment = "staging"
-      managed-by  = "terraform"
+      managed-by  = "opentofu"
       platform    = "platform-engineering"
     }
   }
